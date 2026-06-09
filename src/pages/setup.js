@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useRouter } from 'next/router'
-import { AlertCircle, ShieldCheck } from 'lucide-react'
+import { ShieldCheck } from 'lucide-react'
+import { toast } from 'sonner'
 import { AppShell } from '../components/app-shell'
-import { Alert, AlertDescription } from '../components/ui/alert'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
@@ -33,13 +33,11 @@ export default function Setup({ adminPath }) {
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
-  const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const router = useRouter()
 
   const submit = async event => {
     event.preventDefault()
-    setError('')
     setIsLoading(true)
 
     try {
@@ -53,11 +51,11 @@ export default function Setup({ adminPath }) {
       if (res.ok) {
         router.push(`/${data.adminPath}`)
       } else {
-        setError(data.error || 'Setup failed.')
+        toast.error(data.error || 'Setup failed.')
         setIsLoading(false)
       }
     } catch {
-      setError('An error occurred. Please try again.')
+      toast.error('An error occurred. Please try again.')
       setIsLoading(false)
     }
   }
@@ -77,12 +75,6 @@ export default function Setup({ adminPath }) {
           </CardHeader>
           <form onSubmit={submit}>
             <CardContent className="space-y-4">
-              {error && (
-                <Alert variant="destructive">
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
               <div className="space-y-2">
                 <Label htmlFor="setup-username">Username</Label>
                 <Input

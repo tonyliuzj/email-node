@@ -1,14 +1,14 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
+import { toast } from 'sonner'
 import { withSessionSsr } from '../../lib/session'
 import { AppShell } from '../../components/app-shell'
-import { Alert, AlertDescription } from '../../components/ui/alert'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Button } from '../../components/ui/button'
-import { ArrowLeft, Shield, AlertCircle } from 'lucide-react'
+import { ArrowLeft, Shield } from 'lucide-react'
 
 export const getServerSideProps = withSessionSsr(async ({ req, params }) => {
   const { getAdminPath, getSiteTitle, isSetupRequired } = await import('../../lib/db')
@@ -45,13 +45,11 @@ export const getServerSideProps = withSessionSsr(async ({ req, params }) => {
 export default function Login({ adminPath, siteTitle }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const router = useRouter()
 
   const submit = async e => {
     e.preventDefault()
-    setError('')
     setIsLoading(true)
     try {
       const res = await fetch(`/api/${adminPath}/login`, {
@@ -62,11 +60,11 @@ export default function Login({ adminPath, siteTitle }) {
       if (res.ok) router.push(`/${adminPath}`)
       else {
         const { error: msg } = await res.json()
-        setError(msg || 'Login failed')
+        toast.error(msg || 'Login failed')
         setIsLoading(false)
       }
     } catch {
-      setError('An error occurred. Please try again.')
+      toast.error('An error occurred. Please try again.')
       setIsLoading(false)
     }
   }
@@ -86,12 +84,6 @@ export default function Login({ adminPath, siteTitle }) {
           </CardHeader>
           <form onSubmit={submit}>
             <CardContent className="space-y-4">
-              {error && (
-                <Alert variant="destructive">
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
               <div className="space-y-2">
                 <Label htmlFor="username">
                   Username

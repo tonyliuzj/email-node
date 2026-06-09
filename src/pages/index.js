@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import { Copy, Inbox, KeyRound, LogOut, Mail, RefreshCw, Shuffle } from 'lucide-react';
+import { toast } from 'sonner';
 import { AppShell } from '../components/app-shell';
-import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -144,13 +144,10 @@ export default function Home({
   const [selectedDomain, setSelectedDomain] = useState('');
   const [emailInput, setEmailInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [createErrorAddress, setCreateErrorAddress] = useState('');
   const [isLoginView, setIsLoginView] = useState(false);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPasskey, setLoginPasskey] = useState('');
   const [createdMailbox, setCreatedMailbox] = useState(null);
-  const [copyFeedback, setCopyFeedback] = useState({});
 
   const [turnstileSiteKey, setTurnstileSiteKey] = useState(initialTurnstileSiteKey || '');
   const [turnstileRegistrationEnabled, setTurnstileRegistrationEnabled] = useState(
@@ -180,34 +177,19 @@ export default function Home({
     return domainList[randomIndex].name;
   };
 
-  const getCreateAddressKey = (localPart = emailInput, domainName = selectedDomain) => {
-    const local = String(localPart || '').trim().toLowerCase();
-    const domain = String(domainName || '').trim().toLowerCase();
-    return local && domain ? `${local}@${domain}` : '';
-  };
-
-  const clearErrorOnEdit = () => {
-    if (error) setError('');
-    if (createErrorAddress) setCreateErrorAddress('');
-  };
-
   const updateEmailInput = value => {
-    clearErrorOnEdit();
     setEmailInput(value);
   };
 
   const updateSelectedDomain = value => {
-    clearErrorOnEdit();
     setSelectedDomain(value);
   };
 
   const updateLoginEmail = value => {
-    clearErrorOnEdit();
     setLoginEmail(value);
   };
 
   const updateLoginPasskey = value => {
-    clearErrorOnEdit();
     setLoginPasskey(value);
   };
 
@@ -283,22 +265,17 @@ export default function Home({
 
   const handleSubmit = async () => {
     if (!emailInput || !selectedDomain) {
-      setCreateErrorAddress('');
-      setError('Please enter an email address');
+      toast.error('Please enter an email address');
       return;
     }
 
     if (turnstileRegistrationEnabled && turnstileSiteKey && !registerToken) {
-      setCreateErrorAddress('');
-      setError('Please complete the Turnstile challenge.');
+      toast.error('Please complete the Turnstile challenge.');
       return;
     }
 
     
     setIsLoading(true);
-    setError('');
-    setCreateErrorAddress('');
-    const attemptedAddressKey = getCreateAddressKey();
 
     try {
       const payload = {
@@ -326,15 +303,13 @@ export default function Home({
         });
         setStarted(true);
         setEmailInput('');
-        setCreateErrorAddress('');
+        toast.success('Mailbox created.');
       } else {
-        setCreateErrorAddress(attemptedAddressKey);
-        setError(data.error || 'Failed to create account');
+        toast.error(data.error || 'Failed to create account');
       }
     } catch (err) {
       console.error('Account creation error:', err);
-      setCreateErrorAddress(attemptedAddressKey);
-      setError('Failed to create account. Please try again.');
+      toast.error('Failed to create account. Please try again.');
     } finally {
       setRegisterToken('');
       setIsLoading(false);
@@ -345,31 +320,23 @@ export default function Home({
     if (!value) return;
     try {
       await navigator.clipboard.writeText(value);
-      setCopyFeedback(prev => ({ ...prev, [type]: true }));
-      setTimeout(() => {
-        setCopyFeedback(prev => {
-          const next = { ...prev };
-          delete next[type];
-          return next;
-        });
-      }, 2000);
+      toast.success(`${type === 'email' ? 'Email address' : 'Passkey'} copied.`);
     } catch (error) {
       console.error(`Failed to copy ${type}:`, error);
-      setError('Copy failed. Please copy it manually.');
+      toast.error('Copy failed. Please copy it manually.');
     }
   };
 
   const handleLogin = async () => {
     if (!loginEmail || !loginPasskey) {
-      setError('Please enter both email and passkey.');
+      toast.error('Please enter both email and passkey.');
       return;
     }
     if (turnstileLoginEnabled && turnstileSiteKey && !loginToken) {
-      setError('Please complete the Turnstile challenge.');
+      toast.error('Please complete the Turnstile challenge.');
       return;
     }
     setIsLoading(true);
-    setError('');
     try {
       const payload = { email: loginEmail, passkey: loginPasskey };
       if (turnstileLoginEnabled && turnstileSiteKey) {
@@ -384,11 +351,11 @@ export default function Home({
       if (data.success) {
         router.push('/inbox');
       } else {
-        setError(data.error || 'Login failed.');
+        toast.error(data.error || 'Login failed.');
       }
     } catch (err) {
       console.error('Login error:', err);
-      setError('An error occurred during login.');
+      toast.error('An error occurred during login.');
     } finally {
       setLoginToken('');
       setIsLoading(false);
@@ -397,7 +364,6 @@ export default function Home({
 
   const handleLogout = async () => {
     setIsLoading(true);
-    setError('');
     try {
       await fetch('/api/users/logout', {
         method: 'POST',
@@ -406,7 +372,7 @@ export default function Home({
       router.reload();
     } catch (err) {
       console.error('Logout error:', err);
-      setError('Failed to sign out. Please try again.');
+      toast.error('Failed to sign out. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -415,11 +381,6 @@ export default function Home({
   const fullEmailPreview = emailInput && selectedDomain
     ? `${emailInput}@${selectedDomain}`
     : 'your-email@example.com';
-  const currentCreateAddressKey = getCreateAddressKey();
-  const visibleCreateError = error && (
-    !createErrorAddress ||
-    createErrorAddress === currentCreateAddressKey
-  ) ? error : '';
   const primaryDomain = selectedDomain || domains[0]?.name || 'your-domain.com';
   if (user) {
     return (
@@ -473,7 +434,6 @@ export default function Home({
               <Button
                 variant="outline"
                 onClick={() => {
-                  setError('');
                   setCreatedMailbox(null);
                   setStarted(false);
                   setIsLoginView(value => !value);
@@ -562,11 +522,6 @@ export default function Home({
                     />
                   </div>
                 )}
-                {error && (
-                  <Alert variant="destructive">
-                    <AlertDescription>{error}</AlertDescription>
-                  </Alert>
-                )}
                 <Button
                   onClick={handleLogin}
                   disabled={
@@ -591,8 +546,7 @@ export default function Home({
             ) : (
               <div className="space-y-4">
                 {createdMailbox && (
-                  <Alert>
-                    <AlertDescription className="space-y-3">
+                  <div className="space-y-3 rounded-md border bg-muted/30 p-4">
                       <div>
                         <p className="font-medium">Mailbox created: {createdMailbox.email}</p>
                         <p className="mt-1 text-sm text-muted-foreground">
@@ -609,7 +563,7 @@ export default function Home({
                           size="icon"
                           onClick={() => copyCreatedValue('email', createdMailbox.email)}
                         >
-                          {copyFeedback.email ? <span className="text-xs font-semibold">Copied</span> : <Copy className="h-4 w-4" />}
+                          <Copy className="h-4 w-4" />
                         </Button>
                       </div>
                       <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-3">
@@ -622,15 +576,14 @@ export default function Home({
                           size="icon"
                           onClick={() => copyCreatedValue('passkey', createdMailbox.passkey)}
                         >
-                          {copyFeedback.passkey ? <span className="text-xs font-semibold">Copied</span> : <Copy className="h-4 w-4" />}
+                          <Copy className="h-4 w-4" />
                         </Button>
                       </div>
                       <Button type="button" onClick={() => router.push('/inbox')} className="w-full">
                         <Inbox className="h-4 w-4" />
                         Open inbox
                       </Button>
-                    </AlertDescription>
-                  </Alert>
+                  </div>
                 )}
                 {domainsLoading ? (
                   <div className="space-y-3">
@@ -643,11 +596,9 @@ export default function Home({
                     <Skeleton className="h-6 w-72 max-w-full" />
                   </div>
                 ) : domains.length === 0 ? (
-                  <Alert variant="destructive">
-                    <AlertDescription>
-                      No active domains available. Please contact the administrator.
-                    </AlertDescription>
-                  </Alert>
+                  <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                    No active domains available. Please contact the administrator.
+                  </p>
                 ) : (
                   <div className="space-y-2">
                     <Label className="text-muted-foreground" htmlFor="email-prefix">
@@ -713,11 +664,6 @@ export default function Home({
                       onExpire={handleRegisterExpire}
                     />
                   </div>
-                )}
-                {visibleCreateError && (
-                  <Alert variant="destructive">
-                    <AlertDescription>{visibleCreateError}</AlertDescription>
-                  </Alert>
                 )}
                 <Button
                   onClick={handleSubmit}

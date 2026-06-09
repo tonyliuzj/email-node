@@ -3,8 +3,8 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { Copy, EyeOff, Inbox, LogOut, RefreshCw, ShieldCheck, User } from 'lucide-react';
+import { toast } from 'sonner';
 import { AppShell } from '../components/app-shell';
-import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Label } from '../components/ui/label';
@@ -86,11 +86,8 @@ export default function Account({ siteTitle, adminPath, user }) {
   const router = useRouter();
   const [userEmails, setUserEmails] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
   const [regeneratingId, setRegeneratingId] = useState(null);
   const [newlyGeneratedPasskeys, setNewlyGeneratedPasskeys] = useState(new Set());
-  const [copyFeedback, setCopyFeedback] = useState({});
 
   useEffect(() => {
     const fetchAccount = async () => {
@@ -123,17 +120,10 @@ export default function Account({ siteTitle, adminPath, user }) {
   const copyToClipboard = async (text, emailId, type = 'text') => {
     try {
       await navigator.clipboard.writeText(text);
-      const key = `${emailId}-${type}`;
-      setCopyFeedback(prev => ({ ...prev, [key]: true }));
-      setTimeout(() => {
-        setCopyFeedback(prev => {
-          const next = { ...prev };
-          delete next[key];
-          return next;
-        });
-      }, 2000);
+      toast.success(`${type === 'email' ? 'Email address' : 'Passkey'} copied.`);
     } catch (err) {
       console.error('Failed to copy:', err);
+      toast.error('Copy failed. Please try again.');
     }
   };
 
@@ -148,13 +138,11 @@ export default function Account({ siteTitle, adminPath, user }) {
       next.delete(emailId);
       return next;
     });
-    setSuccess('Passkey has been masked.');
+    toast.success('Passkey has been masked.');
   };
 
   const handleRegeneratePasskey = async emailId => {
     setRegeneratingId(emailId);
-    setError('');
-    setSuccess('');
 
     try {
       const response = await fetch('/api/account/regenerate-passkey', {
@@ -166,7 +154,7 @@ export default function Account({ siteTitle, adminPath, user }) {
       const data = await response.json();
 
       if (!response.ok) {
-        setError(data.error || 'Failed to regenerate passkey.');
+        toast.error(data.error || 'Failed to regenerate passkey.');
         return;
       }
 
@@ -176,10 +164,10 @@ export default function Account({ siteTitle, adminPath, user }) {
         )
       );
       setNewlyGeneratedPasskeys(prev => new Set([...prev, emailId]));
-      setSuccess('Passkey regenerated. Copy it before masking.');
+      toast.success('Passkey regenerated. Copy it before masking.');
     } catch (err) {
       console.error('Passkey regeneration error:', err);
-      setError('Failed to regenerate passkey. Please try again.');
+      toast.error('Failed to regenerate passkey. Please try again.');
     } finally {
       setRegeneratingId(null);
     }
@@ -220,12 +208,6 @@ export default function Account({ siteTitle, adminPath, user }) {
           </div>
         </div>
 
-        {(success || error) && (
-          <Alert variant={error ? 'destructive' : 'default'}>
-            <AlertDescription>{error || success}</AlertDescription>
-          </Alert>
-        )}
-
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
           <div className="space-y-4">
             {userEmails.map(email => (
@@ -247,7 +229,7 @@ export default function Account({ siteTitle, adminPath, user }) {
                         size="icon"
                         onClick={() => copyToClipboard(email.email_address, email.id, 'email')}
                       >
-                        {copyFeedback[`${email.id}-email`] ? <span className="text-xs font-semibold">Copied</span> : <Copy className="h-4 w-4" />}
+                        <Copy className="h-4 w-4" />
                       </Button>
                     </div>
                   </div>
@@ -270,7 +252,7 @@ export default function Account({ siteTitle, adminPath, user }) {
                           size="icon"
                           onClick={() => copyToClipboard(email.passkey, email.id, 'passkey')}
                         >
-                          {copyFeedback[`${email.id}-passkey`] ? <span className="text-xs font-semibold">Copied</span> : <Copy className="h-4 w-4" />}
+                          <Copy className="h-4 w-4" />
                         </Button>
                       )}
                     </div>

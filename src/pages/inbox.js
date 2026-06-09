@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import { RefreshCw, Inbox as InboxIcon, ArrowLeft, User, Calendar, Clock, MailOpen, Copy } from 'lucide-react';
+import { toast } from 'sonner';
 import { AppShell } from '../components/app-shell';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -103,8 +104,6 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
   const isFetchingRef = useRef(false);
   const [userEmails, setUserEmails] = useState([])
   const [loading, setLoading] = useState(true)
-  const [syncError, setSyncError] = useState('')
-  const [copyFeedback, setCopyFeedback] = useState({})
   const primaryEmailAddress = userEmails[0]?.email_address || ''
 
   useEffect(() => {
@@ -141,7 +140,6 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
 
     try {
       setIsRefreshing(true);
-      setSyncError('');
       const res = await fetch('/api/emails', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -153,7 +151,7 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
         throw new Error(data.error || 'Mailbox sync failed.');
       }
       if (data.warning) {
-        setSyncError(data.warning);
+        toast.warning(data.warning);
       }
       const { emails } = data;
       const newOnes = emails?.filter(m => {
@@ -164,7 +162,7 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
       if (newOnes.length) setInbox(prev => [...newOnes, ...prev]);
     } catch (err) {
       console.error(err);
-      setSyncError(err.message || 'Mailbox sync failed.');
+      toast.error(err.message || 'Mailbox sync failed.');
     } finally {
       isFetchingRef.current = false;
       setIsRefreshing(false);
@@ -216,16 +214,10 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
     if (!value) return;
     try {
       await navigator.clipboard.writeText(value);
-      setCopyFeedback(prev => ({ ...prev, [key]: true }));
-      setTimeout(() => {
-        setCopyFeedback(prev => {
-          const next = { ...prev };
-          delete next[key];
-          return next;
-        });
-      }, 2000);
+      toast.success(`${key === 'email' ? 'Inbox address' : 'Value'} copied.`);
     } catch (error) {
       console.error('Copy failed:', error);
+      toast.error('Copy failed. Please try again.');
     }
   };
 
@@ -278,11 +270,6 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                     <p className="text-xs text-muted-foreground">
                       {inbox.length} message{inbox.length !== 1 ? 's' : ''} - refresh in {countdown}s
                     </p>
-                    {syncError && (
-                      <p className="mt-1 text-xs text-destructive">
-                        {syncError}
-                      </p>
-                    )}
                   </div>
                   <Button variant="outline" size="sm" onClick={fetchEmails} disabled={isRefreshing}>
                     <RefreshCw className={cn('h-4 w-4', isRefreshing && 'animate-spin')} />
@@ -304,7 +291,7 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                     onClick={() => copyToClipboard('email', primaryEmailAddress)}
                     disabled={!primaryEmailAddress}
                   >
-                    {copyFeedback.email ? <span className="text-xs font-semibold">Copied</span> : <Copy className="h-4 w-4" />}
+                    <Copy className="h-4 w-4" />
                   </Button>
                 </div>
               </div>

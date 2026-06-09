@@ -1,5 +1,6 @@
 import '../styles/globals.css'
 import Head from 'next/head'
+import { Toaster } from '../components/ui/sonner'
 
 export default function App({ Component, pageProps }) {
   return (
@@ -8,6 +9,7 @@ export default function App({ Component, pageProps }) {
         <title>{pageProps.siteTitle || 'Email Node'}</title>
       </Head>
       <Component {...pageProps} />
+      <Toaster />
     </>
   )
 }

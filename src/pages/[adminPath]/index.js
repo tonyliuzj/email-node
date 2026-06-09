@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/router'
+import { toast } from 'sonner'
 import { withSessionSsr } from '../../lib/session'
 import { AppShell } from '../../components/app-shell'
-import { Alert, AlertDescription } from '../../components/ui/alert'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Checkbox } from '../../components/ui/checkbox'
 import { Input } from '../../components/ui/input'
@@ -93,21 +93,14 @@ export const getServerSideProps = withSessionSsr(async ({ req, params }) => {
 
 export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitle }) {
   const [pwd, setPwd] = useState({ current: '', new: '' })
-  const [pwdMsg, setPwdMsg] = useState('')
-  const [pathMsg, setPathMsg] = useState('')
   const [newPath, setNewPath] = useState(adminPath || '')
-  const [usernameMsg, setUsernameMsg] = useState('')
   const [newUsername, setNewUsername] = useState(admin.username)
   const [domains, setDomains] = useState([])
   const [domainForm, setDomainForm] = useState({})
-  const [domainMsg, setDomainMsg] = useState('')
   const [siteTitle, setSiteTitle] = useState(initialSiteTitle || '')
-  const [siteTitleMsg, setSiteTitleMsg] = useState('')
   const [refreshSeconds, setRefreshSeconds] = useState(10)
-  const [refreshMsg, setRefreshMsg] = useState('')
   const [blockedPrefixes, setBlockedPrefixes] = useState([])
   const [blockedPrefixInput, setBlockedPrefixInput] = useState('')
-  const [blockedPrefixMsg, setBlockedPrefixMsg] = useState('')
   const [turnstileSettings, setTurnstileSettings] = useState({
     siteKey: '',
     secretKey: '',
@@ -117,8 +110,15 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
   })
   const [settingsLoading, setSettingsLoading] = useState(true)
   const [domainsLoading, setDomainsLoading] = useState(true)
-  const [turnstileMsg, setTurnstileMsg] = useState('')
   const router = useRouter()
+
+  const notifyResult = (ok, message) => {
+    if (ok) {
+      toast.success(message)
+    } else {
+      toast.error(message)
+    }
+  }
 
   const fetchSettings = useCallback(() => {
     setSettingsLoading(true)
@@ -168,7 +168,6 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
 
   const changePwd = async e => {
     e.preventDefault()
-    setPwdMsg('')
     const res = await fetch(`/api/${adminPath}/change-password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -178,14 +177,13 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
       }),
     })
     const data = await res.json()
-    setPwdMsg(res.ok ? 'Password changed successfully.' : data.error || 'Error changing password.')
+    notifyResult(res.ok, res.ok ? 'Password changed successfully.' : data.error || 'Error changing password.')
   }
 
   const changeUsername = async e => {
     e.preventDefault()
-    setUsernameMsg('')
     if (!newUsername || newUsername.length < 3) {
-      setUsernameMsg('Username must be at least 3 characters.')
+      toast.error('Username must be at least 3 characters.')
       return
     }
     const res = await fetch(`/api/${adminPath}/change-username`, {
@@ -195,20 +193,19 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
     })
     const data = await res.json()
     if (res.ok) {
-      setUsernameMsg('Username updated! You must log in again.')
+      toast.success('Username updated! You must log in again.')
       setTimeout(() => {
         router.push(`/${adminPath}/login`)
       }, 2000)
     } else {
-      setUsernameMsg(data.error || 'Failed to update username.')
+      toast.error(data.error || 'Failed to update username.')
     }
   }
 
   const changeAdminPath = async e => {
     e.preventDefault()
-    setPathMsg('')
     if (!newPath || newPath.length < 3) {
-      setPathMsg('Admin path must be at least 3 characters.')
+      toast.error('Admin path must be at least 3 characters.')
       return
     }
     const res = await fetch(`/api/${adminPath}/config-path`, {
@@ -217,12 +214,12 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
       body: JSON.stringify({ adminPath: newPath }),
     })
     if (res.ok) {
-      setPathMsg(`Path updated! You must log in again at /${newPath}.`)
+      toast.success(`Path updated! You must log in again at /${newPath}.`)
       setTimeout(() => {
         router.push(`/${newPath}/login`)
       }, 2000)
     } else {
-      setPathMsg('Failed to update admin path.')
+      toast.error('Failed to update admin path.')
     }
   }
 
@@ -233,7 +230,6 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
 
   const saveDomain = async (e) => {
     e.preventDefault()
-    setDomainMsg('')
     const method = domainForm.id ? 'PUT' : 'POST'
     const url = `/api/${adminPath}/domains`
     const res = await fetch(url, {
@@ -242,33 +238,31 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
       body: JSON.stringify(domainForm),
     })
     if (res.ok) {
-      setDomainMsg('Domain saved successfully.')
+      toast.success('Domain saved successfully.')
       setDomainForm({})
       fetchDomains()
     } else {
-      setDomainMsg('Error saving domain.')
+      toast.error('Error saving domain.')
     }
   }
 
   const saveSiteTitle = async (e) => {
     e.preventDefault()
-    setSiteTitleMsg('')
     const res = await fetch(`/api/${adminPath}/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ site_title: siteTitle }),
     })
     if (res.ok) {
-      setSiteTitleMsg('Site title updated successfully.')
+      toast.success('Site title updated successfully.')
       fetchSettings()
     } else {
-      setSiteTitleMsg('Error updating site title.')
+      toast.error('Error updating site title.')
     }
   }
 
   const saveTurnstileSettings = async (e) => {
     e.preventDefault()
-    setTurnstileMsg('')
     const res = await fetch(`/api/${adminPath}/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -280,10 +274,10 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
       }),
     })
     if (res.ok) {
-      setTurnstileMsg('Turnstile settings updated successfully.')
+      toast.success('Turnstile settings updated successfully.')
       fetchSettings()
     } else {
-      setTurnstileMsg('Error updating Turnstile settings.')
+      toast.error('Error updating Turnstile settings.')
     }
   }
 
@@ -299,7 +293,6 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
 
   const saveRefreshSeconds = async (e) => {
     e.preventDefault()
-    setRefreshMsg('')
     const res = await fetch(`/api/${adminPath}/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -307,18 +300,17 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
     })
     const data = await res.json()
     if (res.ok) {
-      setRefreshMsg('Inbox refresh time updated successfully.')
+      toast.success('Inbox refresh time updated successfully.')
       fetchSettings()
     } else {
-      setRefreshMsg(data.error || 'Error updating inbox refresh time.')
+      toast.error(data.error || 'Error updating inbox refresh time.')
     }
   }
 
   const addBlockedPrefix = () => {
-    setBlockedPrefixMsg('')
     const newPrefixes = normalizePrefixEntries(blockedPrefixInput)
     if (newPrefixes.length === 0) {
-      setBlockedPrefixMsg('Enter a valid email prefix.')
+      toast.error('Enter a valid email prefix.')
       return
     }
 
@@ -327,16 +319,15 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
   }
 
   const removeBlockedPrefix = prefix => {
-    setBlockedPrefixMsg('')
     setBlockedPrefixes(currentPrefixes => currentPrefixes.filter(currentPrefix => currentPrefix !== prefix))
+    toast.success('Blocked prefix removed.')
   }
 
   const saveBlockedPrefixes = async (e) => {
     e.preventDefault()
-    setBlockedPrefixMsg('')
     const pendingPrefixes = normalizePrefixEntries(blockedPrefixInput)
     if (blockedPrefixInput.trim() && pendingPrefixes.length === 0) {
-      setBlockedPrefixMsg('Enter a valid email prefix.')
+      toast.error('Enter a valid email prefix.')
       return
     }
     const prefixesToSave = normalizePrefixEntries([...blockedPrefixes, ...pendingPrefixes])
@@ -349,10 +340,10 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
     if (res.ok) {
       setBlockedPrefixes(prefixesToSave)
       setBlockedPrefixInput('')
-      setBlockedPrefixMsg('Blocked prefixes updated successfully.')
+      toast.success('Blocked prefixes updated successfully.')
       fetchSettings()
     } else {
-      setBlockedPrefixMsg(data.error || 'Error updating blocked prefixes.')
+      toast.error(data.error || 'Error updating blocked prefixes.')
     }
   }
 
@@ -364,27 +355,16 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
         body: JSON.stringify({ id })
       })
       if (res.ok) {
-        setDomainMsg('Domain deleted.')
+        toast.success('Domain deleted.')
         fetchDomains()
       } else {
-        setDomainMsg('Error deleting domain.')
+        toast.error('Error deleting domain.')
       }
     }
   }
 
   const activeDomains = domains.filter(domain => domain.is_active).length
   const adminUrl = `/${adminPath}`
-
-  const StatusMessage = ({ message }) => {
-    if (!message) return null
-    const isError = /error|failed|invalid/i.test(message)
-
-    return (
-      <Alert variant={isError ? 'destructive' : 'default'} className={isError ? '' : 'border-emerald-200 text-emerald-700 dark:border-emerald-900 dark:text-emerald-300'}>
-        <AlertDescription>{message}</AlertDescription>
-      </Alert>
-    )
-  }
 
   return (
     <AppShell siteTitle={siteTitle} adminPath={adminPath} adminUser={admin} fullWidth mainClassName="p-0 sm:p-0 lg:p-0">
@@ -572,7 +552,6 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                           variant="outline"
                           onClick={() => {
                             setDomainForm({})
-                            setDomainMsg('')
                           }}
                         >
                           <X className="h-4 w-4" />
@@ -580,7 +559,6 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                         </Button>
                       )}
                     </div>
-                    <StatusMessage message={domainMsg} />
                   </form>
                 </CardContent>
               </Card>
@@ -613,7 +591,6 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                       <Save className="h-4 w-4" />
                       Save title
                     </Button>
-                    <StatusMessage message={siteTitleMsg} />
                   </form>
 
                   <Separator />
@@ -638,7 +615,6 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                       <Save className="h-4 w-4" />
                       Save refresh time
                     </Button>
-                    <StatusMessage message={refreshMsg} />
                   </form>
 
                   <Separator />
@@ -695,7 +671,6 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                       <Ban className="h-4 w-4" />
                       Save blacklist
                     </Button>
-                    <StatusMessage message={blockedPrefixMsg} />
                   </form>
 
                   <Separator />
@@ -720,7 +695,6 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                       <Settings className="h-4 w-4" />
                       Update path
                     </Button>
-                    <StatusMessage message={pathMsg} />
                   </form>
                 </CardContent>
               </Card>
@@ -784,7 +758,6 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                       <ShieldCheck className="h-4 w-4" />
                       Save Turnstile settings
                     </Button>
-                    <StatusMessage message={turnstileMsg} />
                   </form>
                 </CardContent>
               </Card>
@@ -817,7 +790,6 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                       <User className="h-4 w-4" />
                       Update username
                     </Button>
-                    <StatusMessage message={usernameMsg} />
                   </form>
                 </CardContent>
               </Card>
@@ -851,7 +823,6 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                       <Key className="h-4 w-4" />
                       Update password
                     </Button>
-                    <StatusMessage message={pwdMsg} />
                   </form>
                 </CardContent>
               </Card>
