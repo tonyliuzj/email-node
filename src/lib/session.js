@@ -1,17 +1,21 @@
 import { getIronSession } from 'iron-session'
 import { serialize, parse } from 'cookie'
 
-const { SESSION_PASSWORD } = process.env
+function getSessionPassword() {
+  if (!process.env.SESSION_PASSWORD) {
+    throw new Error(
+      'Missing `SESSION_PASSWORD` environment variable for iron-session.\n' +
+      'Please add a `SESSION_PASSWORD` (at least 32 characters) to your .env.local or deployment env.'
+    )
+  }
 
-if (!SESSION_PASSWORD) {
-  throw new Error(
-    'Missing `SESSION_PASSWORD` environment variable for iron-session.\n' +
-    'Please add a `SESSION_PASSWORD` (at least 32 characters) to your .env.local or deployment env.'
-  )
+  return process.env.SESSION_PASSWORD
 }
 
 const sessionOptions = {
-  password: SESSION_PASSWORD,
+  get password() {
+    return getSessionPassword()
+  },
   cookieName: 'temp-mail-session',
   ttl: 7 * 24 * 60 * 60,
   cookieOptions: {

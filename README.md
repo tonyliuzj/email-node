@@ -42,6 +42,7 @@ A modern, self-hosted IMAP webmail UI with an inbox address system. Email Node d
 
 - **Node.js** v18+ (recommended v20+)
 - **npm** or **yarn**
+- **Docker Engine** with **Docker Compose v2** (`docker compose`) for manual container deployment
 - A **catch-all** IMAP mailbox you control (one per domain)
 - (Optional) A [Cloudflare Turnstile](https://www.cloudflare.com/products/turnstile/) account for CAPTCHA protection
 
@@ -52,6 +53,39 @@ A modern, self-hosted IMAP webmail UI with an inbox address system. Email Node d
 ```bash
 curl -sSL https://github.com/tonyliuzj/email-node/releases/latest/download/email-node.sh -o email-node.sh && chmod +x email-node.sh && bash email-node.sh
 ```
+
+Choose **Docker install (Compose)** in the installer to run the published Docker image with a persistent `data/` directory. On Ubuntu/Debian hosts, the installer configures Docker's official apt repository, removes conflicting distro Docker packages such as `docker.io`, and installs Docker Engine with the Compose v2 plugin.
+
+#### Docker Compose Installation
+
+Manual Docker deployment requires the Compose v2 command form, `docker compose`. The legacy `docker-compose` executable is not used.
+
+1. **Clone the repository**
+```bash
+git clone https://github.com/tonyliuzj/email-node.git
+cd email-node
+```
+
+2. **Create runtime secrets**
+```bash
+cp example.env.local .env.local
+```
+
+Replace the placeholder `SESSION_PASSWORD` and `DATA_ENCRYPTION_KEY` values in `.env.local` with strong random values:
+```bash
+openssl rand -base64 32
+```
+
+3. **Start the app**
+```bash
+docker compose pull
+docker compose up -d
+```
+
+4. **Open your browser**
+   Navigate to [http://localhost:3000/setup](http://localhost:3000/setup) and create the first admin user.
+
+The Compose file uses the published image `tonyliuzj/email-node:latest` by default and mounts `./data` to `/app/data` so the SQLite database survives container updates. The file is named `docker-compose.yml`; only the command syntax is Compose v2.
 
 #### Manual Installation
 
@@ -165,6 +199,9 @@ src/
     └── globals.css                 # Global styles & Tailwind
 data/
 └── temp-mail.db                    # SQLite database (auto-created)
+Dockerfile                          # Production container image
+docker-compose.yml                  # Docker Compose deployment
+email-node.sh                       # Interactive direct/Docker installer
 ```
 
 ### Key Components
@@ -196,7 +233,56 @@ Email Node can be deployed to Vercel, but note that SQLite requires a persistent
 
 ### Docker Deployment
 
-Docker assets are not included in this repository yet. Use the Node.js production build above, or add a project-specific Dockerfile before deploying with Docker.
+The repository includes a production `Dockerfile` and `docker-compose.yml`. Use Docker Compose v2 commands only:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The one-click installer can install Docker for Ubuntu/Debian systems. It uses Docker's official apt packages:
+
+```text
+docker-ce
+docker-ce-cli
+containerd.io
+docker-buildx-plugin
+docker-compose-plugin
+```
+
+Before installing those packages, the installer removes conflicting distro packages when present, including `docker.io`, `docker-compose`, `containerd`, and `runc`.
+
+Useful Docker commands:
+
+```bash
+docker compose logs -f
+docker compose ps
+docker compose down
+```
+
+To expose a different host port, create or edit `.env` next to `docker-compose.yml`:
+
+```bash
+HOST_PORT=8080
+CONTAINER_PORT=3000
+DOCKER_IMAGE=tonyliuzj/email-node:latest
+```
+
+To build locally instead of using Docker Hub:
+
+```bash
+docker compose up -d --build
+```
+
+When using the installer, set `DOCKER_BUILD=1` before running `email-node.sh` if you want the Docker install mode to build from the cloned checkout instead of pulling the published image.
+
+### Publishing Docker Images
+
+Maintainers can build and publish the image to Docker Hub with:
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 -t tonyliuzj/email-node:latest --push .
+```
 
 ### Environment Variables
 
@@ -205,6 +291,9 @@ Most configuration is done through the admin panel. Environment variables:
 - `SESSION_PASSWORD` - Secret used for encrypted sessions.
 - `DATA_ENCRYPTION_KEY` - Secret used to encrypt stored IMAP and Turnstile secrets. If omitted, the app falls back to `SESSION_PASSWORD`.
 - `PORT` - Port used by the Next.js server.
+- `HOST_PORT` - Host port used by Docker Compose.
+- `CONTAINER_PORT` - Container port used by Docker Compose.
+- `DOCKER_IMAGE` - Docker image used by Docker Compose and the installer.
 
 ---
 

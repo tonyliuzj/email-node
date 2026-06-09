@@ -1,0 +1,18 @@
+services:
+  email-node:
+    image: ${DOCKER_IMAGE:-tonyliuzj/email-node:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ${CONTAINER_NAME:-email-node}
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    environment:
+      NODE_ENV: production
+      PORT: ${CONTAINER_PORT:-3000}
+      HOSTNAME: 0.0.0.0
+    ports:
+      - "${HOST_PORT:-3000}:${CONTAINER_PORT:-3000}"
+    volumes:
+      - ./data:/app/data

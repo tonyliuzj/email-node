@@ -20,6 +20,8 @@ APP_ENV_FILE="${APP_ENV_FILE:-.env.local}"
 COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 
+DOCKER_IMAGE="${DOCKER_IMAGE:-tonyliuzj/email-node:latest}"
+DOCKER_BUILD="${DOCKER_BUILD:-0}"
 CONTAINER_PORT="${CONTAINER_PORT:-3000}"
 SERVICE_NAME="${SERVICE_NAME:-${APP_NAME}.service}"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}"
@@ -27,6 +29,11 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}"
 NODESOURCE_NODE_VERSION="${NODESOURCE_NODE_VERSION:-22.x}"
 NODESOURCE_KEYRING="/usr/share/keyrings/nodesource.gpg"
 NODESOURCE_KEY_URL="https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key"
+
+DOCKER_KEYRING_DIR="/etc/apt/keyrings"
+DOCKER_KEYRING="${DOCKER_KEYRING_DIR}/docker.asc"
+DOCKER_SOURCE_FILE="/etc/apt/sources.list.d/docker.list"
+DOCKER_APT_BASE_URL="https://download.docker.com/linux"
 
 # Wait 1 second before major steps to mock/show install progress.
 # Set STEP_DELAY=0 to disable.
@@ -349,9 +356,82 @@ install_direct_dependencies() {
   check_system_packages_up_to_date
 }
 
+remove_conflicting_docker_packages() {
+  local package_name
+  local installed_packages=()
+  local conflicting_packages=(
+    docker.io
+    docker-doc
+    docker-compose
+    docker-compose-v2
+    podman-docker
+    containerd
+    runc
+  )
+
+  for package_name in "${conflicting_packages[@]}"; do
+    if dpkg-query -W -f='${Status}' "$package_name" 2>/dev/null | grep -q "install ok installed"; then
+      installed_packages+=("$package_name")
+    fi
+  done
+
+  if [ "${#installed_packages[@]}" -eq 0 ]; then
+    echo "No conflicting Docker packages found."
+    return 0
+  fi
+
+  step "Removing conflicting Docker packages..."
+  as_root apt remove -y "${installed_packages[@]}"
+}
+
+configure_docker_apt_repo() {
+  local docker_os_id
+  local docker_codename
+  local arch
+
+  if [ ! -f /etc/os-release ]; then
+    echo "Cannot detect OS release. Docker official apt packages require Ubuntu or Debian."
+    exit 1
+  fi
+
+  # shellcheck disable=SC1091
+  . /etc/os-release
+
+  docker_os_id="${ID:-}"
+  docker_codename="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
+  arch="$(dpkg --print-architecture)"
+
+  case "$docker_os_id" in
+    ubuntu|debian) ;;
+    *)
+      echo "Unsupported OS for Docker official apt packages: ${docker_os_id:-unknown}"
+      echo "Only Ubuntu and Debian are supported by this installer."
+      exit 1
+      ;;
+  esac
+
+  if [ -z "$docker_codename" ]; then
+    echo "Cannot detect Ubuntu/Debian codename for Docker apt source."
+    exit 1
+  fi
+
+  step "Configuring Docker official apt repository..."
+
+  as_root install -m 0755 -d "$DOCKER_KEYRING_DIR"
+  curl -fsSL "${DOCKER_APT_BASE_URL}/${docker_os_id}/gpg" | as_root tee "$DOCKER_KEYRING" >/dev/null
+  as_root chmod a+r "$DOCKER_KEYRING"
+
+  echo "deb [arch=${arch} signed-by=${DOCKER_KEYRING}] ${DOCKER_APT_BASE_URL}/${docker_os_id} ${docker_codename} stable" \
+    | as_root tee "$DOCKER_SOURCE_FILE" >/dev/null
+
+  step "Updating apt after adding Docker repository..."
+  as_root apt update
+}
+
 install_docker_dependencies() {
   step "Installing system dependencies for Docker deployment..."
 
+  remove_conflicting_docker_packages
   upgrade_system_packages
 
   as_root apt install -y \
@@ -361,15 +441,15 @@ install_docker_dependencies() {
     gnupg \
     openssl
 
-  if ! command_exists docker; then
-    step "Installing Docker..."
-    as_root apt install -y docker.io
-  fi
+  configure_docker_apt_repo
 
-  if ! docker compose version >/dev/null 2>&1 && ! command_exists docker-compose; then
-    step "Installing Docker Compose..."
-    as_root apt install -y docker-compose-plugin || as_root apt install -y docker-compose
-  fi
+  step "Installing Docker Engine and Compose v2..."
+  as_root apt install -y \
+    docker-ce \
+    docker-ce-cli \
+    containerd.io \
+    docker-buildx-plugin \
+    docker-compose-plugin
 
   step "Enabling and starting Docker..."
   as_root systemctl enable --now docker
@@ -380,10 +460,14 @@ install_docker_dependencies() {
 }
 
 ensure_docker_available() {
-  check_required_commands docker
-  check_docker_compose_command
+  if ! command_exists docker || ! docker compose version >/dev/null 2>&1; then
+    install_docker_dependencies
+    return
+  fi
 
   as_root systemctl enable --now docker
+  check_required_commands docker
+  check_docker_compose_command
 }
 
 check_docker_compose_command() {
@@ -394,12 +478,7 @@ check_docker_compose_command() {
     return 0
   fi
 
-  if command_exists docker-compose; then
-    echo "OK: docker-compose"
-    return 0
-  fi
-
-  echo "Docker Compose is not installed. Run Docker install first."
+  echo "Docker Compose v2 is not installed. Install the docker-compose-plugin package."
   exit 1
 }
 
@@ -407,24 +486,25 @@ compose() {
   require_repo_checkout
   require_compose_file
 
-  if docker compose version >/dev/null 2>&1; then
-    (
-      cd "$INSTALL_DIR"
-      as_root docker compose -f "$COMPOSE_FILE" "$@"
-    )
+  if ! docker compose version >/dev/null 2>&1; then
+    echo "Docker Compose v2 is required but was not found."
+    exit 1
+  fi
+
+  (
+    cd "$INSTALL_DIR"
+    as_root docker compose -f "$COMPOSE_FILE" "$@"
+  )
+}
+
+compose_up() {
+  if [ "$DOCKER_BUILD" = "1" ]; then
+    compose up -d --build
     return
   fi
 
-  if command_exists docker-compose; then
-    (
-      cd "$INSTALL_DIR"
-      as_root docker-compose -f "$COMPOSE_FILE" "$@"
-    )
-    return
-  fi
-
-  echo "Docker Compose is required but was not found."
-  exit 1
+  compose pull
+  compose up -d
 }
 
 require_compose_file() {
@@ -550,6 +630,9 @@ EOF
 # Docker Compose environment file
 
 HOST_PORT=$HOST_PORT
+CONTAINER_PORT=$CONTAINER_PORT
+DOCKER_IMAGE=$DOCKER_IMAGE
+CONTAINER_NAME=$APP_NAME
 EOF
 }
 
@@ -558,6 +641,16 @@ ensure_app_env_defaults() {
 
   ensure_env_value "SESSION_PASSWORD" "$(openssl rand -base64 32)" "$env_file"
   ensure_env_value "DATA_ENCRYPTION_KEY" "$(openssl rand -base64 32)" "$env_file"
+}
+
+ensure_docker_env_defaults() {
+  local env_file="${INSTALL_DIR}/${COMPOSE_ENV_FILE}"
+
+  touch "$env_file"
+  ensure_env_value "HOST_PORT" "3000" "$env_file"
+  ensure_env_value "CONTAINER_PORT" "$CONTAINER_PORT" "$env_file"
+  ensure_env_value "DOCKER_IMAGE" "$DOCKER_IMAGE" "$env_file"
+  ensure_env_value "CONTAINER_NAME" "$APP_NAME" "$env_file"
 }
 
 # ============================================================
@@ -754,12 +847,13 @@ install_docker_mode() {
   step "Creating data directory..."
   mkdir -p "${INSTALL_DIR}/data"
 
-  step "Building and starting Docker services..."
-  compose up -d --build
+  step "Starting Docker services..."
+  compose_up
 
   echo
   echo "Installation complete!"
   echo "Visit: http://localhost:$HOST_PORT"
+  echo "Docker image: $DOCKER_IMAGE"
   echo "View logs: sudo docker compose logs -f"
   echo "Container status: sudo docker compose ps"
 }
@@ -776,9 +870,10 @@ update_docker_mode() {
   git pull --ff-only
 
   ensure_app_env_defaults
+  ensure_docker_env_defaults
 
-  step "Rebuilding and restarting Docker services..."
-  compose up -d --build
+  step "Updating Docker services..."
+  compose_up
 
   HOST_PORT_VALUE="$(read_env_value "HOST_PORT" "${INSTALL_DIR}/${COMPOSE_ENV_FILE}")"
   HOST_PORT_VALUE="${HOST_PORT_VALUE:-3000}"
@@ -786,6 +881,7 @@ update_docker_mode() {
   echo
   echo "Update complete!"
   echo "Visit: http://localhost:$HOST_PORT_VALUE"
+  echo "Docker image: $DOCKER_IMAGE"
   echo "View logs: sudo docker compose logs -f"
 }
 
@@ -830,7 +926,7 @@ uninstall_docker_mode() {
   echo "Uninstalling ${APP_TITLE} Docker deployment..."
 
   if [ -d "$INSTALL_DIR" ]; then
-    if command_exists docker && { docker compose version >/dev/null 2>&1 || command_exists docker-compose; }; then
+    if command_exists docker && docker compose version >/dev/null 2>&1; then
       step "Stopping and removing Docker containers..."
       compose down --remove-orphans || true
     fi
