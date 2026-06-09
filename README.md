@@ -1,4 +1,4 @@
-# Mailsy — Persistent Email Service
+# Email Node — Persistent Email Service
 
 A modern, self-hosted email service built with Next.js, Tailwind CSS, and SQLite. Users can create persistent email accounts with secure passkey authentication and access their inbox in real-time via IMAP polling. An admin panel allows configuration of multiple domains, IMAP settings, and Cloudflare Turnstile CAPTCHA protection.
 
@@ -25,7 +25,7 @@ A modern, self-hosted email service built with Next.js, Tailwind CSS, and SQLite
   - Optional Cloudflare Turnstile CAPTCHA for registration and login
 
 - **Admin Panel**
-  - Default account: `admin` / `changeme`
+  - First-run setup page for creating the initial admin user
   - Configure multiple domains with individual IMAP settings
   - Manage Turnstile CAPTCHA settings (registration/login toggles)
   - Change admin credentials and customize site title
@@ -50,15 +50,15 @@ A modern, self-hosted email service built with Next.js, Tailwind CSS, and SQLite
 #### Quick Install (One-Click Script)
 
 ```bash
-curl -sSL https://github.com/tonyliuzj/mailsy/releases/latest/download/mailsy.sh -o mailsy.sh && chmod +x mailsy.sh && bash mailsy.sh
+curl -sSL https://github.com/tonyliuzj/email-node/releases/latest/download/email-node.sh -o email-node.sh && chmod +x email-node.sh && bash email-node.sh
 ```
 
 #### Manual Installation
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/tonyliuzj/Mailsy.git
-cd mailsy
+git clone https://github.com/tonyliuzj/email-node.git
+cd email-node
 ```
 
 2. **Install dependencies**
@@ -74,10 +74,8 @@ npm run dev
 4. **Open your browser**
    Navigate to [http://localhost:3000](http://localhost:3000)
 
-5. **Access admin panel**
-   Go to [http://localhost:3000/admin](http://localhost:3000/admin) and login with:
-   - Username: `admin`
-   - Password: `changeme`
+5. **Create the first admin user**
+   On a fresh database, the app redirects to [http://localhost:3000/setup](http://localhost:3000/setup). Create your admin user there.
 
 6. **Configure your first domain**
    In the admin panel, add a domain with your IMAP settings.
@@ -119,11 +117,8 @@ Add and manage multiple domains in the admin panel:
 
 **Important:** Each domain requires a catch-all IMAP mailbox that receives all emails sent to `*@yourdomain.com`.
 
-**Default Admin Credentials:**
-- Username: `admin`
-- Password: `changeme`
-
-**⚠️ Change your password immediately after first login!**
+**First-run admin setup:**
+Fresh installs start without an admin account. Visit `/setup` to create the first admin user; after setup completes, `/setup` redirects to the admin login page.
 
 ---
 
@@ -163,13 +158,7 @@ src/
 │   ├── user-auth.js                # User authentication helpers
 │   └── turnstile.js                # Turnstile verification
 ├── components/
-│   ├── modern-ui/                  # Custom UI components
-│   │   ├── Button.js
-│   │   ├── Card.js
-│   │   ├── Input.js
-│   │   ├── EmailInput.js
-│   │   ├── Layout.js
-│   │   └── ...
+│   ├── app-shell.js                # Shared app shell built with shadcn/ui
 │   └── ui/                         # shadcn/ui components
 │       └── ...
 └── styles/
@@ -199,7 +188,7 @@ npm start
 
 ### Vercel Deployment
 
-Mailsy can be deployed to Vercel, but note that SQLite requires a persistent filesystem:
+Email Node can be deployed to Vercel, but note that SQLite requires a persistent filesystem:
 
 1. Connect your GitHub repository to Vercel
 2. Ensure the `data/` directory is writable and persisted
@@ -207,21 +196,15 @@ Mailsy can be deployed to Vercel, but note that SQLite requires a persistent fil
 
 ### Docker Deployment
 
-```bash
-# Build the image
-docker build -t mailsy .
-
-# Run the container
-docker run -d -p 3000:3000 -v $(pwd)/data:/app/data mailsy
-```
+Docker assets are not included in this repository yet. Use the Node.js production build above, or add a project-specific Dockerfile before deploying with Docker.
 
 ### Environment Variables
 
-All configuration is done through the admin panel. Optional environment variables:
+Most configuration is done through the admin panel. Environment variables:
 
-- `ADMIN_USERNAME` - Override default admin username (default: `admin`)
-- `ADMIN_PASSWORD` - Override default admin password (default: `changeme`)
-- `NEXT_PUBLIC_BASE_URL` - Base URL for API calls (default: `http://localhost:3000`)
+- `SESSION_PASSWORD` - Secret used for encrypted sessions.
+- `DATA_ENCRYPTION_KEY` - Secret used to encrypt stored IMAP and Turnstile secrets. If omitted, the app falls back to `SESSION_PASSWORD`.
+- `PORT` - Port used by the Next.js server.
 
 ---
 
@@ -231,8 +214,8 @@ All configuration is done through the admin panel. Optional environment variable
 - **Bcrypt password hashing** for all credentials (admin and user passkeys)
 - **Secure passkey management** with regeneration and manual masking controls
 - **Optional CAPTCHA protection** via Cloudflare Turnstile for registration and login
-- **No plaintext secrets** - all sensitive data encrypted in SQLite database
-- **CSRF protection** through session tokens
+- **Encrypted stored secrets** for IMAP passwords and Turnstile secret keys
+- **Same-origin checks and rate limits** on mutating API routes
 - **Secure cookie settings** with httpOnly and secure flags
 
 ---

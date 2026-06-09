@@ -1,4 +1,4 @@
-import { getSiteTitle, getFirstActiveDomain, getTurnstileConfig } from '../../lib/db'
+import { getAdminPath, getSiteTitle, getFirstActiveDomain, getTurnstileConfig } from '../../lib/db'
 
 export default function handler(req, res) {
   const domain = getFirstActiveDomain()
@@ -7,6 +7,7 @@ export default function handler(req, res) {
   res.json({
     domain: domain.name,
     title: domain.title || siteTitle,
+    adminPath: getAdminPath(),
     turnstileSiteKey: turnstile.siteKey || '',
     turnstileRegistrationEnabled: turnstile.registrationEnabled || false,
     turnstileLoginEnabled: turnstile.loginEnabled || false,

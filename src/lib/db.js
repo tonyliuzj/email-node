@@ -2,6 +2,13 @@ import Database from 'better-sqlite3'
 import bcrypt from 'bcryptjs'
 import path from 'path'
 import fs from 'fs'
+import { decryptSecret, encryptSecret, isEncryptedSecret } from './secret-store.js'
+import {
+  normalizeDomainName,
+  normalizeEmailAddress,
+  normalizeSiteTitle,
+  isStrongAdminPassword,
+} from './validation.js'
 
 const dbPath = path.join(process.cwd(), 'data', 'temp-mail.db')
 fs.mkdirSync(path.dirname(dbPath), { recursive: true })
@@ -38,7 +45,8 @@ db.prepare(`
 db.prepare(`
   INSERT OR IGNORE INTO settings (key, value)
   VALUES ('admin_path', 'admin'),
-         ('site_title', 'example.com'),
+         ('site_title', 'Email Node'),
+         ('inbox_refresh_seconds', '10'),
          ('turnstile_site_key', ''),
          ('turnstile_secret_key', ''),
          ('turnstile_registration_enabled', '0'),
@@ -66,32 +74,67 @@ db.prepare(`
   )
 `).run()
 
+function migrateStoredSecrets() {
+  const turnstileSecret = db.prepare('SELECT value FROM settings WHERE key = ?').get('turnstile_secret_key')
+  if (turnstileSecret?.value && !isEncryptedSecret(turnstileSecret.value)) {
+    db.prepare('UPDATE settings SET value = ? WHERE key = ?')
+      .run(encryptSecret(turnstileSecret.value), 'turnstile_secret_key')
+  }
 
+  const domains = db.prepare('SELECT id, imap_password FROM domains').all()
+  const updateDomainSecret = db.prepare('UPDATE domains SET imap_password = ? WHERE id = ?')
+  const migrateDomains = db.transaction(rows => {
+    for (const row of rows) {
+      if (row.imap_password && !isEncryptedSecret(row.imap_password)) {
+        updateDomainSecret.run(encryptSecret(row.imap_password), row.id)
+      }
+    }
+  })
+  migrateDomains(domains)
+}
 
-const defaultAdminUsername = process.env.ADMIN_USERNAME || 'admin'
-const defaultAdminPassword = process.env.ADMIN_PASSWORD || 'changeme'
+migrateStoredSecrets()
 
-const existingAdmin = db
-  .prepare('SELECT 1 FROM admin WHERE username = ?')
-  .get(defaultAdminUsername)
+export function isSetupRequired() {
+  const row = db.prepare('SELECT COUNT(*) as count FROM admin').get()
+  return Number(row?.count || 0) === 0
+}
 
-if (!existingAdmin) {
-  const hash = bcrypt.hashSync(defaultAdminPassword, 10)
+export function createInitialAdmin(username, password) {
+  if (!isSetupRequired()) {
+    return { success: false, error: 'Setup has already been completed.' }
+  }
+
+  const normalizedUsername = String(username || '').trim()
+  if (normalizedUsername.length < 3) {
+    return { success: false, error: 'Username must be at least 3 characters.' }
+  }
+  if (!isStrongAdminPassword(password)) {
+    return { success: false, error: 'Password must be at least 12 characters.' }
+  }
+
+  const hash = bcrypt.hashSync(password, 10)
   db.prepare('INSERT INTO admin (username, password_hash) VALUES (?, ?)')
-    .run(defaultAdminUsername, hash)
+    .run(normalizedUsername, hash)
+
+  return { success: true, username: normalizedUsername }
 }
 
 export function getAdmin(username) {
   return db
     .prepare('SELECT * FROM admin WHERE username = ?')
-    .get(username)
+    .get(String(username || '').trim())
 }
 
 export function updateAdminPassword(username, newPass) {
+  if (!isStrongAdminPassword(newPass)) {
+    return { success: false, error: 'Password must be at least 12 characters.' }
+  }
   const hash = bcrypt.hashSync(newPass, 10)
-  return db
+  const result = db
     .prepare('UPDATE admin SET password_hash = ? WHERE username = ?')
     .run(hash, username)
+  return { success: result.changes > 0 }
 }
 
 export function getSetting(key) {
@@ -131,11 +174,32 @@ export function getFirstActiveDomain() {
 }
 
 export function getSiteTitle() {
-  return getSetting('site_title') || 'example.com'
+  return getSetting('site_title') || 'Email Node'
 }
 
 export function setSiteTitle(title) {
-  setSetting('site_title', title)
+  const normalizedTitle = normalizeSiteTitle(title)
+  if (!normalizedTitle) {
+    return { success: false, error: 'Site title must be 1-80 characters.' }
+  }
+  setSetting('site_title', normalizedTitle)
+  return { success: true }
+}
+
+export function getInboxRefreshSeconds() {
+  const seconds = Number.parseInt(getSetting('inbox_refresh_seconds') || '10', 10)
+  if (!Number.isInteger(seconds) || seconds < 5) return 10
+  return seconds
+}
+
+export function setInboxRefreshSeconds(value) {
+  const seconds = Number.parseInt(value, 10)
+  if (!Number.isInteger(seconds) || seconds < 5) {
+    return { success: false, error: 'Refresh time must be at least 5 seconds.' }
+  }
+
+  setSetting('inbox_refresh_seconds', String(seconds))
+  return { success: true, value: seconds }
 }
 
 export function getTurnstileConfig() {
@@ -143,7 +207,7 @@ export function getTurnstileConfig() {
   const rawLogin = getSetting('turnstile_login_enabled')
   return {
     siteKey: getSetting('turnstile_site_key') || '',
-    secretKey: getSetting('turnstile_secret_key') || '',
+    secretKey: decryptSecret(getSetting('turnstile_secret_key') || ''),
     registrationEnabled: rawRegistration ? rawRegistration === '1' : false,
     loginEnabled: rawLogin ? rawLogin === '1' : false,
   }
@@ -159,7 +223,10 @@ export function setTurnstileConfig({
     setSetting('turnstile_site_key', siteKey.trim())
   }
   if (typeof secretKey === 'string') {
-    setSetting('turnstile_secret_key', secretKey.trim())
+    const trimmedSecret = secretKey.trim()
+    if (trimmedSecret) {
+      setSetting('turnstile_secret_key', encryptSecret(trimmedSecret))
+    }
   }
   if (typeof registrationEnabled === 'boolean') {
     setSetting('turnstile_registration_enabled', registrationEnabled ? '1' : '0')
@@ -170,12 +237,18 @@ export function setTurnstileConfig({
 }
 
 export function createEmail(emailAddress, passkey, domainName) {
+  const normalizedEmail = normalizeEmailAddress(emailAddress)
+  const normalizedDomain = normalizeDomainName(domainName)
+  if (!normalizedEmail || !normalizedDomain || !normalizedEmail.endsWith(`@${normalizedDomain}`)) {
+    return { success: false, error: 'Invalid email address' }
+  }
+
   const passkeyHash = bcrypt.hashSync(passkey, 10);
   try {
     const result = db.prepare(`
       INSERT INTO emails (email_address, passkey_hash, domain_name)
       VALUES (?, ?, ?)
-    `).run(emailAddress, passkeyHash, domainName);
+    `).run(normalizedEmail, passkeyHash, normalizedDomain);
     return { success: true, emailId: result.lastInsertRowid };
   } catch (error) {
     if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
@@ -186,7 +259,9 @@ export function createEmail(emailAddress, passkey, domainName) {
 }
 
 export function getEmailByAddress(emailAddress) {
-  return db.prepare('SELECT * FROM emails WHERE email_address = ?').get(emailAddress);
+  const normalizedEmail = normalizeEmailAddress(emailAddress)
+  if (!normalizedEmail) return null
+  return db.prepare('SELECT * FROM emails WHERE email_address = ?').get(normalizedEmail);
 }
 
 export function verifyEmail(emailAddress, passkey) {
@@ -254,6 +329,55 @@ export function deleteSessions(emailId) {
 export function getUserEmailsByUserId(emailId) {
   const email = db.prepare('SELECT * FROM emails WHERE id = ?').get(emailId);
   return email ? [email] : [];
+}
+
+export function getSafeUserEmailsByUserId(emailId) {
+  return db
+    .prepare('SELECT id, email_address, domain_name, created_at FROM emails WHERE id = ?')
+    .all(emailId)
+}
+
+export function getActiveDomainByName(domainName) {
+  const normalizedDomain = normalizeDomainName(domainName)
+  if (!normalizedDomain) return null
+  return db.prepare('SELECT * FROM domains WHERE name = ? AND is_active = 1').get(normalizedDomain)
+}
+
+export function getDomainForImap(domainName) {
+  const normalizedDomain = normalizeDomainName(domainName)
+  if (!normalizedDomain) return null
+  const domain = db.prepare('SELECT * FROM domains WHERE name = ?').get(normalizedDomain)
+  if (!domain) return null
+  return {
+    ...domain,
+    imap_password: decryptSecret(domain.imap_password || ''),
+  }
+}
+
+export function toSafeSessionEmail(email) {
+  if (!email) return null
+  return {
+    id: email.id || email.email_id,
+    email_id: email.id || email.email_id,
+    email_address: email.email_address,
+    domain_name: email.domain_name,
+  }
+}
+
+export function getPublicDomains() {
+  return db.prepare('SELECT id, name FROM domains WHERE is_active = 1 ORDER BY name').all()
+}
+
+export function getAdminDomains() {
+  return db.prepare(`
+    SELECT id, name, imap_host, imap_port, imap_user, imap_password, imap_tls, is_active
+    FROM domains
+    ORDER BY name
+  `).all().map(domain => ({
+    ...domain,
+    imap_password: undefined,
+    has_imap_password: Boolean(decryptSecret(domain.imap_password || '')),
+  }))
 }
 
 // Missing functions needed by the emails API

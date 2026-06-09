@@ -1,5 +1,7 @@
+import bcrypt from 'bcryptjs'
 import { withSessionRoute } from '../../../lib/session'
-import { getAdminPath, updateAdminPassword } from '../../../lib/db'
+import { getAdmin, getAdminPath, updateAdminPassword } from '../../../lib/db'
+import { protectMutation } from '../../../lib/security'
 
 export default withSessionRoute(async (req, res) => {
   const { adminPath } = req.query
@@ -17,12 +19,24 @@ export default withSessionRoute(async (req, res) => {
     return res.status(405).end()
   }
 
-  const { newPassword } = req.body
-  if (!newPassword) {
-    return res.status(400).json({ error: 'New password is required' })
+  if (!protectMutation(req, res, { key: 'admin-write', max: 30, windowMs: 60 * 1000 })) {
+    return
   }
 
-  updateAdminPassword(admin.username, newPassword)
+  const { currentPassword, newPassword } = req.body || {}
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Current password and new password are required' })
+  }
+
+  const adminRecord = getAdmin(admin.username)
+  if (!adminRecord || !bcrypt.compareSync(currentPassword, adminRecord.password_hash)) {
+    return res.status(401).json({ error: 'Current password is incorrect' })
+  }
+
+  const result = updateAdminPassword(admin.username, newPassword)
+  if (!result.success) {
+    return res.status(400).json({ error: result.error || 'Unable to update password' })
+  }
 
   return res.status(200).json({ ok: true })
 })

@@ -1,6 +1,7 @@
 import { regeneratePasskey, getUserEmailsByUserId } from '../../../lib/db.js'
 import { withSessionRoute } from '../../../lib/session.js'
 import { nanoid } from 'nanoid'
+import { protectMutation } from '../../../lib/security.js'
 
 async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -9,6 +10,10 @@ async function handler(req, res) {
   }
 
   try {
+    if (!protectMutation(req, res, { key: 'passkey-regenerate', max: 10, windowMs: 10 * 60 * 1000 })) {
+      return
+    }
+
     // Get user data from iron-session
     const userEmail = req.session.get('email')
     
@@ -16,23 +21,23 @@ async function handler(req, res) {
       return res.status(401).json({ error: 'Not authenticated' })
     }
 
-    const { emailId } = req.body
+    const emailId = Number.parseInt(req.body?.emailId, 10)
 
-    if (!emailId) {
+    if (!Number.isInteger(emailId) || emailId <= 0) {
       return res.status(400).json({ error: 'Email ID is required' })
     }
 
     // Get user emails using the email ID from the session
     const userEmailId = userEmail.id || userEmail.email_id
     const userEmails = getUserEmailsByUserId(userEmailId)
-    const targetEmail = userEmails.find(email => email.id === parseInt(emailId))
+    const targetEmail = userEmails.find(email => email.id === emailId)
 
     if (!targetEmail) {
       return res.status(403).json({ error: 'Unauthorized access to this email' })
     }
 
     // Generate new passkey
-    const newPasskey = nanoid(16)
+    const newPasskey = nanoid(24)
 
     // Update passkey in database
     const success = regeneratePasskey(emailId, newPasskey)

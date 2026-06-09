@@ -1,5 +1,6 @@
 import { getAdmin, updateAdminUsername, getAdminPath } from '../../../lib/db'
 import { withSessionRoute } from '../../../lib/session'
+import { protectMutation } from '../../../lib/security'
 
 export default withSessionRoute(async (req, res) => {
   const { adminPath } = req.query
@@ -13,6 +14,9 @@ export default withSessionRoute(async (req, res) => {
   }
   if (req.method !== 'POST') {
     res.status(405).end()
+    return
+  }
+  if (!protectMutation(req, res, { key: 'admin-write', max: 30, windowMs: 60 * 1000 })) {
     return
   }
   const { newUsername } = req.body

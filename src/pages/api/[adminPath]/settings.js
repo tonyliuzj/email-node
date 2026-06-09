@@ -1,5 +1,14 @@
 import { withSessionSsr } from '../../../lib/session'
-import { getSiteTitle, setSiteTitle, getTurnstileConfig, setTurnstileConfig } from '../../../lib/db'
+import {
+  getAdminPath,
+  getInboxRefreshSeconds,
+  getSiteTitle,
+  getTurnstileConfig,
+  setInboxRefreshSeconds,
+  setSiteTitle,
+  setTurnstileConfig,
+} from '../../../lib/db'
+import { protectMutation } from '../../../lib/security'
 
 function normalizeBoolean(value) {
   if (typeof value === 'boolean') return value
@@ -11,6 +20,11 @@ function normalizeBoolean(value) {
 }
 
 export default withSessionSsr(async function handler(req, res) {
+  const { adminPath } = req.query
+  if (adminPath !== getAdminPath()) {
+    return res.status(404).json({ error: 'Not found' })
+  }
+
   const admin = req.session.get('admin')
   if (!admin) {
     return res.status(401).json({ error: 'Unauthorized' })
@@ -21,16 +35,22 @@ export default withSessionSsr(async function handler(req, res) {
       const turnstile = getTurnstileConfig()
       return res.status(200).json({
         site_title: getSiteTitle(),
+        inbox_refresh_seconds: getInboxRefreshSeconds(),
         turnstile_site_key: turnstile.siteKey,
-        turnstile_secret_key: turnstile.secretKey,
+        turnstile_secret_configured: Boolean(turnstile.secretKey),
         turnstile_registration_enabled: turnstile.registrationEnabled,
         turnstile_login_enabled: turnstile.loginEnabled,
       })
     }
     
     if (req.method === 'POST') {
+      if (!protectMutation(req, res, { key: 'admin-write', max: 30, windowMs: 60 * 1000 })) {
+        return
+      }
+
       const { 
         site_title,
+        inbox_refresh_seconds,
         turnstile_site_key,
         turnstile_secret_key,
         turnstile_registration_enabled,
@@ -38,10 +58,17 @@ export default withSessionSsr(async function handler(req, res) {
       } = req.body || {}
 
       if (typeof site_title !== 'undefined') {
-        if (!site_title) {
-          return res.status(400).json({ error: 'Site title is required' })
+        const result = setSiteTitle(site_title)
+        if (!result.success) {
+          return res.status(400).json({ error: result.error })
         }
-        setSiteTitle(site_title)
+      }
+
+      if (typeof inbox_refresh_seconds !== 'undefined') {
+        const result = setInboxRefreshSeconds(inbox_refresh_seconds)
+        if (!result.success) {
+          return res.status(400).json({ error: result.error })
+        }
       }
 
       if (

@@ -1,6 +1,8 @@
-import { verifyEmail } from '../../../lib/db.js'
+import { toSafeSessionEmail, verifyEmail } from '../../../lib/db.js'
 import { withSessionRoute } from '../../../lib/session.js'
 import { isTurnstileEnabled, verifyTurnstileToken, getClientIp } from '../../../lib/turnstile.js'
+import { protectMutation } from '../../../lib/security.js'
+import { normalizeEmailAddress } from '../../../lib/validation.js'
 
 async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -9,7 +11,11 @@ async function handler(req, res) {
   }
 
   try {
-    const { email, passkey, turnstileToken } = req.body
+    if (!protectMutation(req, res, { key: 'user-login', max: 12, windowMs: 10 * 60 * 1000 })) {
+      return
+    }
+
+    const { email, passkey, turnstileToken } = req.body || {}
 
     
     if (isTurnstileEnabled('login')) {
@@ -21,18 +27,18 @@ async function handler(req, res) {
     }
 
     
-    if (!email || !passkey) {
+    const normalizedEmail = normalizeEmailAddress(email)
+    if (!normalizedEmail || !passkey) {
       return res.status(400).json({ error: 'Email and passkey are required' })
     }
 
     
-    const verificationResult = verifyEmail(email, passkey)
+    const verificationResult = verifyEmail(normalizedEmail, passkey)
     if (!verificationResult.success) {
-      return res.status(401).json({ error: verificationResult.error })
+      return res.status(401).json({ error: 'Invalid email or passkey' })
     }
 
-    // Set session data in iron-session
-    req.session.set('email', verificationResult.email)
+    req.session.set('email', toSafeSessionEmail(verificationResult.email))
     await req.session.save()
 
     return res.status(200).json({

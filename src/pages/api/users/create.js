@@ -1,8 +1,10 @@
-import { createEmail, getFirstActiveDomain, createSession } from '../../../lib/db.js';
+import { createEmail, getActiveDomainByName, getFirstActiveDomain, toSafeSessionEmail } from '../../../lib/db.js';
 import { withSessionRoute } from '../../../lib/session.js';
 import { generate as randomWords } from 'random-words';
 import { nanoid } from 'nanoid';
 import { isTurnstileEnabled, verifyTurnstileToken, getClientIp } from '../../../lib/turnstile.js';
+import { protectMutation } from '../../../lib/security.js';
+import { buildEmailAddress, normalizeEmailAddress, normalizeEmailLocalPart, normalizeDomainName } from '../../../lib/validation.js';
 
 async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -11,7 +13,11 @@ async function handler(req, res) {
   }
 
   try {
-const { userEmail, emailType, customEmail, domainName, turnstileToken } = req.body
+    if (!protectMutation(req, res, { key: 'user-create', max: 12, windowMs: 10 * 60 * 1000 })) {
+      return
+    }
+
+    const { userEmail, emailType, customEmail, domainName, turnstileToken } = req.body || {}
 
     
     if (isTurnstileEnabled('registration')) {
@@ -23,65 +29,65 @@ const { userEmail, emailType, customEmail, domainName, turnstileToken } = req.bo
     }
 
     
-if (!userEmail || !emailType || !domainName) {
+    if (!emailType || !domainName) {
       return res.status(400).json({ error: 'Missing required fields' })
     }
 
     
     let emailAddress;
+    let selectedDomainName = normalizeDomainName(domainName)
+    const activeDomain = getActiveDomainByName(selectedDomainName)
+    if (!activeDomain) {
+      return res.status(400).json({ error: 'Invalid or inactive domain' })
+    }
+    selectedDomainName = activeDomain.name
 
     if (emailType === 'random') {
       const randomAlias = randomWords({ exactly: 2, join: '.' });
       const domain = getFirstActiveDomain();
       emailAddress = `${randomAlias}@${domain.name}`;
+      selectedDomainName = domain.name
     } else if (emailType === 'custom') {
       if (!customEmail) {
         return res.status(400).json({ error: 'Custom email address is required' });
       }
-      emailAddress = customEmail;
+      emailAddress = normalizeEmailAddress(customEmail);
+      if (!emailAddress || !emailAddress.endsWith(`@${selectedDomainName}`)) {
+        return res.status(400).json({ error: 'Invalid email address' });
+      }
     } else if (emailType === 'username') {
-      // Validate username - should not contain @ or invalid characters
-      if (userEmail.includes('@') || userEmail.includes(' ') || !userEmail.trim()) {
+      const localPart = normalizeEmailLocalPart(userEmail)
+      if (!localPart) {
         return res.status(400).json({ error: 'Invalid username format' });
       }
       
-      // Create email by combining username with domain
-      emailAddress = `${userEmail.trim()}@${domainName}`;
+      emailAddress = buildEmailAddress(localPart, selectedDomainName);
     } else {
       return res.status(400).json({ error: 'Invalid email type' });
     }
 
     
-    const passkey = nanoid(16);
+    const passkey = nanoid(24);
 
     
-    const emailResult = createEmail(emailAddress, passkey, domainName);
+    const emailResult = createEmail(emailAddress, passkey, selectedDomainName);
     if (!emailResult.success) {
       return res.status(400).json({ error: emailResult.error });
     }
 
     
-    req.session.set('email', {
+    req.session.set('email', toSafeSessionEmail({
       email_id: emailResult.emailId,
+      id: emailResult.emailId,
       email_address: emailAddress,
-      domain_name: domainName,
-    });
+      domain_name: selectedDomainName,
+    }));
     await req.session.save();
-
-    // Create database session entry for withUserAuth compatibility
-    const sessionToken = nanoid(32);
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-    const sessionResult = createSession(emailResult.emailId, sessionToken, expiresAt);
-    
-    if (!sessionResult.success) {
-      console.error('Failed to create database session:', sessionResult.error);
-    }
 
     return res.status(201).json({
       success: true,
       email: {
         email: emailAddress,
-        apiKey: passkey,
       },
       passkey: passkey,
       emailId: emailResult.emailId,

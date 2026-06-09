@@ -1,8 +1,4 @@
-import Database from 'better-sqlite3'
-import path from 'path'
-
-const dbPath = path.join(process.cwd(), 'data', 'temp-mail.db')
-const db = new Database(dbPath)
+import { getPublicDomains } from '../../lib/db'
 
 export default function handler(req, res) {
   if (req.method !== 'GET') {
@@ -11,8 +7,7 @@ export default function handler(req, res) {
   }
 
   try {
-    const domains = db.prepare('SELECT * FROM domains WHERE is_active = 1').all()
-    return res.status(200).json(domains)
+    return res.status(200).json(getPublicDomains())
   } catch (error) {
     console.error('Error fetching domains:', error)
     return res.status(500).json({ error: 'Internal server error' })

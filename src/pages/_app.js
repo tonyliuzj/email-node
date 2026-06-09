@@ -5,7 +5,7 @@ export default function App({ Component, pageProps }) {
   return (
     <>
       <Head>
-        <title>{pageProps.siteTitle || 'Mailsy'}</title>
+        <title>{pageProps.siteTitle || 'Email Node'}</title>
       </Head>
       <Component {...pageProps} />
     </>

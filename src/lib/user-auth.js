@@ -1,26 +1,14 @@
-import { getSessionCookie, withSessionRoute } from './session.js'
-import { getSession } from './db.js'
+import { withSessionRoute, withSessionSsr } from './session.js'
 
 export function withUserAuth(handler) {
   return withSessionRoute(async function(req, res) {
     try {
-      const sessionToken = getSessionCookie(req)
-      
-      if (!sessionToken) {
-        return res.status(401).json({ error: 'No session found' })
-      }
-
-      const session = getSession(sessionToken)
-      
-      if (!session) {
-        
-        req.session.destroy()
+      const user = req.session.get('email')
+      if (!user) {
         return res.status(401).json({ error: 'Invalid or expired session' })
       }
 
-      
-      req.userSession = session
-      
+      req.userSession = user
       return handler(req, res)
     } catch (error) {
       console.error('Authentication error:', error)
@@ -30,14 +18,9 @@ export function withUserAuth(handler) {
 }
 
 export function withUser(handler) {
-  return async function(context) {
+  return withSessionSsr(async function(context) {
     const { req } = context;
-    const sessionToken = getSessionCookie(req);
-    let user = null;
-    if (sessionToken) {
-      user = getSession(sessionToken);
-    }
-    context.user = user;
+    context.user = req.session.get('email') || null;
     return handler(context);
-  }
+  });
 }

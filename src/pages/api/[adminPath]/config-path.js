@@ -1,5 +1,7 @@
 import { getAdminPath, setAdminPath } from '../../../lib/db'
 import { withSessionRoute } from '../../../lib/session'
+import { protectMutation } from '../../../lib/security'
+import { normalizeAdminPath } from '../../../lib/validation'
 
 export default withSessionRoute(async (req, res) => {
   const { adminPath } = req.query
@@ -14,11 +16,15 @@ export default withSessionRoute(async (req, res) => {
     return res.json({ adminPath: getAdminPath() });
   } else if (req.method === 'POST') {
     const { adminPath: newPath } = req.body;
-    if (!newPath || typeof newPath !== 'string' || newPath.length < 3) {
+    const normalizedPath = normalizeAdminPath(newPath)
+    if (!normalizedPath) {
       return res.status(400).json({ error: 'Invalid path' });
     }
-    setAdminPath(newPath);
-    return res.json({ ok: true, adminPath: newPath });
+    if (!protectMutation(req, res, { key: 'admin-write', max: 30, windowMs: 60 * 1000 })) {
+      return
+    }
+    setAdminPath(normalizedPath);
+    return res.json({ ok: true, adminPath: normalizedPath });
   } else {
     res.status(405).end();
   }

@@ -1,4 +1,4 @@
-name: Upload mailsy.sh to Release
+name: Upload email-node.sh to Release
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   upload-release-asset:
-    name: Upload mailsy.sh to Release
+    name: Upload email-node.sh to Release
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -50,7 +50,7 @@ jobs:
             });
             core.setOutput("release_id", release.id);
 
-      - name: Delete existing mailsy.sh asset (if exists)
+      - name: Delete existing email-node.sh asset (if exists)
         continue-on-error: true
         uses: actions/github-script@v6
         with:
@@ -63,7 +63,7 @@ jobs:
               release_id: release_id
             });
             for (const asset of assets) {
-              if (asset.name === 'mailsy.sh') {
+              if (asset.name === 'email-node.sh') {
                 await github.rest.repos.deleteReleaseAsset({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -72,9 +72,9 @@ jobs:
               }
             }
 
-      - name: Upload mailsy.sh to Release
+      - name: Upload email-node.sh to Release
         uses: softprops/action-gh-release@v1
         with:
-          files: mailsy.sh
+          files: email-node.sh
           tag_name: latest
           token: ${{ secrets.GITHUB_TOKEN }}
