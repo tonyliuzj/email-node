@@ -1,19 +1,19 @@
-# Email Node — Persistent Email Service
+# Email Node — IMAP Webmail UI
 
-A modern, self-hosted email service built with Next.js, Tailwind CSS, and SQLite. Users can create persistent email accounts with secure passkey authentication and access their inbox in real-time via IMAP polling. An admin panel allows configuration of multiple domains, IMAP settings, and Cloudflare Turnstile CAPTCHA protection.
+A modern, self-hosted IMAP webmail UI with an inbox address system. Email Node does not send, receive, relay, or host mail by itself; it connects to catch-all IMAP mailboxes you already control, lets visitors create persistent inbox addresses on configured domains, and provides a browser inbox for reading matching messages.
 
 ---
 
 ## Features
 
-- **Persistent Email Accounts**
-  Create permanent email addresses with secure passkey authentication. Users can log back in anytime to access their inbox.
+- **Inbox Address System**
+  Create persistent inbox addresses with secure passkey authentication. Users can log back in anytime to access mail delivered to that address.
 
 - **Multi-Domain Support**
-  Configure multiple domains with separate IMAP settings. Users can choose from available domains when creating accounts.
+  Configure multiple domains backed by catch-all IMAP mailboxes. Users can choose from available domains when creating addresses.
 
-- **Real-Time Inbox**
-  Auto-refreshes every 5 seconds via IMAP polling. View sender, subject, and message preview, then click to read full emails with HTML rendering.
+- **IMAP Webmail Inbox**
+  Polls IMAP on a configurable interval. View sender, subject, and message preview, then click to read full emails with sanitized HTML rendering.
 
 - **Modern, Responsive UI**
   Clean interface with dark mode support, built with Tailwind CSS and Lucide icons. Mobile-friendly design with smooth animations.
@@ -22,12 +22,12 @@ A modern, self-hosted email service built with Next.js, Tailwind CSS, and SQLite
   - Session-based authentication with iron-session
   - Bcrypt password hashing for admin and user passkeys
   - Passkey regeneration with manual masking controls
-  - Optional Cloudflare Turnstile CAPTCHA for registration and login
+  - Optional Cloudflare Turnstile CAPTCHA for address creation and login
 
 - **Admin Panel**
   - First-run setup page for creating the initial admin user
   - Configure multiple domains with individual IMAP settings
-  - Manage Turnstile CAPTCHA settings (registration/login toggles)
+  - Manage Turnstile CAPTCHA settings for address creation and login
   - Change admin credentials and customize site title
   - Dynamic admin path configuration
 
@@ -113,9 +113,9 @@ Add and manage multiple domains in the admin panel:
 | **IMAP User**    | Catch-all account (e.g. `catchall@example.com`)  |
 | **IMAP Password**| Password for IMAP account                        |
 | **Use TLS**      | Enable TLS/SSL (recommended)                     |
-| **Active**       | Enable/disable domain for new registrations      |
+| **Active**       | Enable/disable domain for new address creation   |
 
-**Important:** Each domain requires a catch-all IMAP mailbox that receives all emails sent to `*@yourdomain.com`.
+**Important:** Email Node is only a web UI and address manager. Each domain requires an external catch-all IMAP mailbox that receives all emails sent to `*@yourdomain.com`.
 
 **First-run admin setup:**
 Fresh installs start without an admin account. Visit `/setup` to create the first admin user; after setup completes, `/setup` redirects to the admin login page.
@@ -127,14 +127,14 @@ Fresh installs start without an admin account. Visit `/setup` to create the firs
 ```
 src/
 ├── pages/
-│   ├── index.js                    # Landing page: account creation & login
+│   ├── index.js                    # Landing page: address creation & login
 │   ├── inbox.js                    # User inbox with email list & detail view
 │   ├── [adminPath]/
 │   │   ├── index.js                # Admin dashboard
 │   │   └── login.js                # Admin login page
 │   └── api/
 │       ├── users/
-│       │   ├── create.js           # User registration
+│       │   ├── create.js           # Inbox address creation
 │       │   ├── login.js            # User authentication
 │       │   ├── logout.js           # User logout
 │       │   └── me.js               # Get current user
@@ -172,7 +172,7 @@ data/
 - **`db.js`** - Database schema with tables for admin, settings, domains, emails, and sessions
 - **`user-auth.js`** - Server-side authentication wrapper for protected pages
 - **`emails.js`** - IMAP client that fetches messages for specific email addresses
-- **`inbox.js`** - Real-time inbox UI with auto-refresh every 5 seconds
+- **`inbox.js`** - IMAP inbox UI with configurable auto-refresh
 - **`[adminPath]`** - Dynamic admin routes based on configured admin path
 
 ---
@@ -213,7 +213,7 @@ Most configuration is done through the admin panel. Environment variables:
 - **Session-based authentication** with `iron-session` for both admin and users
 - **Bcrypt password hashing** for all credentials (admin and user passkeys)
 - **Secure passkey management** with regeneration and manual masking controls
-- **Optional CAPTCHA protection** via Cloudflare Turnstile for registration and login
+- **Optional CAPTCHA protection** via Cloudflare Turnstile for address creation and login
 - **Encrypted stored secrets** for IMAP passwords and Turnstile secret keys
 - **Same-origin checks and rate limits** on mutating API routes
 - **Secure cookie settings** with httpOnly and secure flags
@@ -224,7 +224,7 @@ Most configuration is done through the admin panel. Environment variables:
 
 - **Responsive Design** - Mobile-first layout that adapts to all screen sizes
 - **Dark Mode Support** - Automatic theme switching based on system preferences
-- **Real-time Updates** - Inbox auto-refreshes every 5 seconds without page reload
+- **Auto Refresh** - Inbox refresh interval is configurable from the admin dashboard
 - **Smooth Animations** - Polished transitions and loading states
 - **Accessible UI** - Keyboard navigation and screen reader support
 - **Copy to Clipboard** - One-click copying of email addresses and passkeys
