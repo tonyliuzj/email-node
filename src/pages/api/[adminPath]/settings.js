@@ -1,9 +1,11 @@
 import { withSessionSsr } from '../../../lib/session'
 import {
   getAdminPath,
+  getBlockedEmailPrefixes,
   getInboxRefreshSeconds,
   getSiteTitle,
   getTurnstileConfig,
+  setBlockedEmailPrefixes,
   setInboxRefreshSeconds,
   setSiteTitle,
   setTurnstileConfig,
@@ -36,6 +38,7 @@ export default withSessionSsr(async function handler(req, res) {
       return res.status(200).json({
         site_title: getSiteTitle(),
         inbox_refresh_seconds: getInboxRefreshSeconds(),
+        blocked_email_prefixes: getBlockedEmailPrefixes(),
         turnstile_site_key: turnstile.siteKey,
         turnstile_secret_configured: Boolean(turnstile.secretKey),
         turnstile_registration_enabled: turnstile.registrationEnabled,
@@ -51,6 +54,7 @@ export default withSessionSsr(async function handler(req, res) {
       const { 
         site_title,
         inbox_refresh_seconds,
+        blocked_email_prefixes,
         turnstile_site_key,
         turnstile_secret_key,
         turnstile_registration_enabled,
@@ -66,6 +70,13 @@ export default withSessionSsr(async function handler(req, res) {
 
       if (typeof inbox_refresh_seconds !== 'undefined') {
         const result = setInboxRefreshSeconds(inbox_refresh_seconds)
+        if (!result.success) {
+          return res.status(400).json({ error: result.error })
+        }
+      }
+
+      if (typeof blocked_email_prefixes !== 'undefined') {
+        const result = setBlockedEmailPrefixes(blocked_email_prefixes)
         if (!result.success) {
           return res.status(400).json({ error: result.error })
         }

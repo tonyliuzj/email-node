@@ -20,12 +20,41 @@ import {
   TableRow,
 } from '../../components/ui/table'
 import {
-  Globe, Key, LogOut, MailCheck,
+  Ban, Globe, Key, LogOut, MailCheck,
   Settings, ShieldCheck, User, Edit, Trash2, Plus, Save, X, Server
 } from 'lucide-react'
 
 const toBoolean = value => ['1', 1, true, 'true', 'yes', 'on'].includes(value)
+const EMAIL_PREFIX_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/
 const adminSectionGridClass = 'grid w-full min-w-0 grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_360px] [&>*]:min-w-0'
+
+const normalizePrefixEntry = value => {
+  const prefix = String(value || '').trim().toLowerCase()
+  if (
+    !EMAIL_PREFIX_PATTERN.test(prefix) ||
+    prefix.includes('..') ||
+    prefix.startsWith('.') ||
+    prefix.endsWith('.')
+  ) {
+    return ''
+  }
+  return prefix
+}
+
+const normalizePrefixEntries = value => {
+  const rawPrefixes = Array.isArray(value) ? value : String(value || '').split(/[\n,]+/)
+  const prefixes = []
+  const seen = new Set()
+
+  rawPrefixes.forEach(rawPrefix => {
+    const prefix = normalizePrefixEntry(rawPrefix)
+    if (!prefix || seen.has(prefix)) return
+    seen.add(prefix)
+    prefixes.push(prefix)
+  })
+
+  return prefixes
+}
 
 export const getServerSideProps = withSessionSsr(async ({ req, params }) => {
   const { getAdminPath, getSiteTitle, isSetupRequired } = await import('../../lib/db')
@@ -76,6 +105,9 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
   const [siteTitleMsg, setSiteTitleMsg] = useState('')
   const [refreshSeconds, setRefreshSeconds] = useState(10)
   const [refreshMsg, setRefreshMsg] = useState('')
+  const [blockedPrefixes, setBlockedPrefixes] = useState([])
+  const [blockedPrefixInput, setBlockedPrefixInput] = useState('')
+  const [blockedPrefixMsg, setBlockedPrefixMsg] = useState('')
   const [turnstileSettings, setTurnstileSettings] = useState({
     siteKey: '',
     secretKey: '',
@@ -98,6 +130,9 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
         }
         if (data?.inbox_refresh_seconds !== undefined) {
           setRefreshSeconds(Number(data.inbox_refresh_seconds) || 10)
+        }
+        if (Array.isArray(data?.blocked_email_prefixes)) {
+          setBlockedPrefixes(normalizePrefixEntries(data.blocked_email_prefixes))
         }
         setTurnstileSettings(prev => ({
           siteKey: data?.turnstile_site_key ?? prev.siteKey ?? '',
@@ -276,6 +311,48 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
       fetchSettings()
     } else {
       setRefreshMsg(data.error || 'Error updating inbox refresh time.')
+    }
+  }
+
+  const addBlockedPrefix = () => {
+    setBlockedPrefixMsg('')
+    const newPrefixes = normalizePrefixEntries(blockedPrefixInput)
+    if (newPrefixes.length === 0) {
+      setBlockedPrefixMsg('Enter a valid email prefix.')
+      return
+    }
+
+    setBlockedPrefixes(currentPrefixes => normalizePrefixEntries([...currentPrefixes, ...newPrefixes]))
+    setBlockedPrefixInput('')
+  }
+
+  const removeBlockedPrefix = prefix => {
+    setBlockedPrefixMsg('')
+    setBlockedPrefixes(currentPrefixes => currentPrefixes.filter(currentPrefix => currentPrefix !== prefix))
+  }
+
+  const saveBlockedPrefixes = async (e) => {
+    e.preventDefault()
+    setBlockedPrefixMsg('')
+    const pendingPrefixes = normalizePrefixEntries(blockedPrefixInput)
+    if (blockedPrefixInput.trim() && pendingPrefixes.length === 0) {
+      setBlockedPrefixMsg('Enter a valid email prefix.')
+      return
+    }
+    const prefixesToSave = normalizePrefixEntries([...blockedPrefixes, ...pendingPrefixes])
+    const res = await fetch(`/api/${adminPath}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ blocked_email_prefixes: prefixesToSave }),
+    })
+    const data = await res.json()
+    if (res.ok) {
+      setBlockedPrefixes(prefixesToSave)
+      setBlockedPrefixInput('')
+      setBlockedPrefixMsg('Blocked prefixes updated successfully.')
+      fetchSettings()
+    } else {
+      setBlockedPrefixMsg(data.error || 'Error updating blocked prefixes.')
     }
   }
 
@@ -518,7 +595,7 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                     <Globe className="h-5 w-5 text-primary" />
                     Public site
                   </CardTitle>
-                  <CardDescription>Basic public identity and admin URL.</CardDescription>
+                  <CardDescription>Basic public identity, address controls, and admin URL.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <form onSubmit={saveSiteTitle} className="space-y-4">
@@ -562,6 +639,63 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                       Save refresh time
                     </Button>
                     <StatusMessage message={refreshMsg} />
+                  </form>
+
+                  <Separator />
+
+                  <form onSubmit={saveBlockedPrefixes} className="space-y-4">
+                    <div className="space-y-2">
+                      <Label>Blocked email prefixes</Label>
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <Input
+                          type="text"
+                          value={blockedPrefixInput}
+                          onChange={e => setBlockedPrefixInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              addBlockedPrefix()
+                            }
+                          }}
+                          placeholder="admin"
+                          disabled={settingsLoading}
+                        />
+                        <Button type="button" variant="outline" onClick={addBlockedPrefix} disabled={settingsLoading}>
+                          <Plus className="h-4 w-4" />
+                          Add
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="flex min-h-10 flex-wrap gap-2 rounded-md border bg-muted/30 p-3">
+                      {blockedPrefixes.length > 0 ? (
+                        blockedPrefixes.map(prefix => (
+                          <span
+                            key={prefix}
+                            className="inline-flex h-7 max-w-full items-center gap-1 rounded-md border bg-background px-2 font-mono text-xs"
+                          >
+                            <span className="truncate">{prefix}</span>
+                            <button
+                              type="button"
+                              className="inline-flex h-5 w-5 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                              onClick={() => removeBlockedPrefix(prefix)}
+                              aria-label={`Remove ${prefix}`}
+                              disabled={settingsLoading}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </span>
+                        ))
+                      ) : (
+                        <p className="text-sm text-muted-foreground">No prefixes blocked.</p>
+                      )}
+                    </div>
+
+                    <Button type="submit" variant="outline" disabled={settingsLoading}>
+                      <Ban className="h-4 w-4" />
+                      Save blacklist
+                    </Button>
+                    <StatusMessage message={blockedPrefixMsg} />
                   </form>
 
                   <Separator />

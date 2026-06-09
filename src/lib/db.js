@@ -6,9 +6,32 @@ import { decryptSecret, encryptSecret, isEncryptedSecret } from './secret-store.
 import {
   normalizeDomainName,
   normalizeEmailAddress,
+  normalizeEmailLocalPart,
   normalizeSiteTitle,
   isStrongAdminPassword,
 } from './validation.js'
+
+export const DEFAULT_BLOCKED_EMAIL_PREFIXES = [
+  'abuse',
+  'admin',
+  'administrator',
+  'billing',
+  'contact',
+  'help',
+  'hostmaster',
+  'info',
+  'mailer-daemon',
+  'no-reply',
+  'noreply',
+  'postmaster',
+  'privacy',
+  'root',
+  'sales',
+  'security',
+  'support',
+  'system',
+  'webmaster',
+]
 
 const dbPath = path.join(process.cwd(), 'data', 'temp-mail.db')
 fs.mkdirSync(path.dirname(dbPath), { recursive: true })
@@ -50,8 +73,9 @@ db.prepare(`
          ('turnstile_site_key', ''),
          ('turnstile_secret_key', ''),
          ('turnstile_registration_enabled', '0'),
-         ('turnstile_login_enabled', '0')
-`).run()
+         ('turnstile_login_enabled', '0'),
+         ('blocked_email_prefixes', ?)
+`).run(JSON.stringify(DEFAULT_BLOCKED_EMAIL_PREFIXES))
 
 db.prepare(`
   CREATE TABLE IF NOT EXISTS emails (
@@ -202,6 +226,50 @@ export function setInboxRefreshSeconds(value) {
   return { success: true, value: seconds }
 }
 
+export function normalizeBlockedEmailPrefixes(value) {
+  const rawPrefixes = Array.isArray(value)
+    ? value
+    : String(value || '')
+      .split(/[\n,]+/)
+
+  const prefixes = []
+  const seen = new Set()
+
+  for (const rawPrefix of rawPrefixes) {
+    const normalizedPrefix = normalizeEmailLocalPart(rawPrefix)
+    if (!normalizedPrefix || seen.has(normalizedPrefix)) continue
+    seen.add(normalizedPrefix)
+    prefixes.push(normalizedPrefix)
+  }
+
+  return prefixes
+}
+
+export function getBlockedEmailPrefixes() {
+  const rawValue = getSetting('blocked_email_prefixes')
+  if (rawValue === null || typeof rawValue === 'undefined') return DEFAULT_BLOCKED_EMAIL_PREFIXES
+
+  try {
+    const parsedValue = JSON.parse(rawValue)
+    if (Array.isArray(parsedValue)) return normalizeBlockedEmailPrefixes(parsedValue)
+    return normalizeBlockedEmailPrefixes(rawValue)
+  } catch {
+    return normalizeBlockedEmailPrefixes(rawValue)
+  }
+}
+
+export function setBlockedEmailPrefixes(value) {
+  const prefixes = normalizeBlockedEmailPrefixes(value)
+  setSetting('blocked_email_prefixes', JSON.stringify(prefixes))
+  return { success: true, value: prefixes }
+}
+
+export function isEmailPrefixBlocked(value) {
+  const normalizedPrefix = normalizeEmailLocalPart(value)
+  if (!normalizedPrefix) return false
+  return getBlockedEmailPrefixes().includes(normalizedPrefix)
+}
+
 export function getTurnstileConfig() {
   const rawRegistration = getSetting('turnstile_registration_enabled')
   const rawLogin = getSetting('turnstile_login_enabled')
@@ -241,6 +309,11 @@ export function createEmail(emailAddress, passkey, domainName) {
   const normalizedDomain = normalizeDomainName(domainName)
   if (!normalizedEmail || !normalizedDomain || !normalizedEmail.endsWith(`@${normalizedDomain}`)) {
     return { success: false, error: 'Invalid email address' }
+  }
+
+  const localPart = normalizedEmail.split('@')[0]
+  if (isEmailPrefixBlocked(localPart)) {
+    return { success: false, error: 'This email prefix is reserved and cannot be created' }
   }
 
   const passkeyHash = bcrypt.hashSync(passkey, 10);
