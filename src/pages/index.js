@@ -149,7 +149,7 @@ export default function Home({
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPasskey, setLoginPasskey] = useState('');
   const [createdMailbox, setCreatedMailbox] = useState(null);
-  const [copySuccess, setCopySuccess] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState({});
 
   const [turnstileSiteKey, setTurnstileSiteKey] = useState(initialTurnstileSiteKey || '');
   const [turnstileRegistrationEnabled, setTurnstileRegistrationEnabled] = useState(
@@ -171,6 +171,12 @@ export default function Home({
       throw new Error(`Expected JSON but received ${contentType || 'an unknown response type'}.`);
     }
     return response.json();
+  };
+
+  const getRandomDomainName = domainList => {
+    if (!domainList.length) return '';
+    const randomIndex = Math.floor(Math.random() * domainList.length);
+    return domainList[randomIndex].name;
   };
 
   useEffect(() => {
@@ -196,7 +202,7 @@ export default function Home({
         if (Array.isArray(data)) {
           setDomains(data);
           if (data.length > 0) {
-            setSelectedDomain(data[0].name);
+            setSelectedDomain(getRandomDomainName(data));
           }
         }
       })
@@ -296,17 +302,33 @@ export default function Home({
     }
   };
 
-  const copyPasskey = async () => {
-    if (!createdMailbox?.passkey) return;
-
+  const copyCreatedValue = async (type, value) => {
+    if (!value) return;
     try {
-      await navigator.clipboard.writeText(createdMailbox.passkey);
-      setCopySuccess(true);
-      setTimeout(() => setCopySuccess(false), 2000);
+      await navigator.clipboard.writeText(value);
+      setCopyFeedback(prev => ({ ...prev, [type]: true }));
+      setTimeout(() => {
+        setCopyFeedback(prev => {
+          const next = { ...prev };
+          delete next[type];
+          return next;
+        });
+      }, 2000);
     } catch (error) {
-      console.error('Failed to copy passkey:', error);
-      setError('Passkey created, but copy failed. Please copy it manually.');
+      console.error(`Failed to copy ${type}:`, error);
+      setError('Copy failed. Please copy it manually.');
     }
+  };
+
+  const openCreatedInbox = () => {
+    if (createdMailbox?.email && createdMailbox?.passkey && typeof window !== 'undefined') {
+      sessionStorage.setItem('email-node:new-passkey', JSON.stringify({
+        email: createdMailbox.email,
+        passkey: createdMailbox.passkey,
+        createdAt: Date.now(),
+      }));
+    }
+    router.push('/inbox');
   };
 
   const handleLogin = async () => {
@@ -546,13 +568,31 @@ export default function Home({
                       </div>
                       <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-3">
                         <span className="min-w-0 flex-1 break-all font-mono text-sm">
-                          {createdMailbox.passkey}
+                          {createdMailbox.email}
                         </span>
-                        <Button type="button" variant="ghost" size="icon" onClick={copyPasskey}>
-                          {copySuccess ? <span className="text-xs font-semibold">Copied</span> : <Copy className="h-4 w-4" />}
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => copyCreatedValue('email', createdMailbox.email)}
+                        >
+                          {copyFeedback.email ? <span className="text-xs font-semibold">Copied</span> : <Copy className="h-4 w-4" />}
                         </Button>
                       </div>
-                      <Button type="button" onClick={() => router.push('/inbox')} className="w-full">
+                      <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-3">
+                        <span className="min-w-0 flex-1 break-all font-mono text-sm">
+                          {createdMailbox.passkey}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => copyCreatedValue('passkey', createdMailbox.passkey)}
+                        >
+                          {copyFeedback.passkey ? <span className="text-xs font-semibold">Copied</span> : <Copy className="h-4 w-4" />}
+                        </Button>
+                      </div>
+                      <Button type="button" onClick={openCreatedInbox} className="w-full">
                         <Inbox className="h-4 w-4" />
                         Open inbox
                       </Button>

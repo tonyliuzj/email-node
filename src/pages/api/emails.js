@@ -29,6 +29,17 @@ function withTimeout(promise, timeoutMs, message, onTimeout) {
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId))
 }
 
+function formatAddressList(addressList) {
+  const address = addressList?.value?.[0]
+  if (!address) return addressList?.text || ''
+
+  const emailAddress = address.address || ''
+  const senderName = String(address.name || '').trim().replace(/^["']+|["']+$/g, '')
+
+  if (senderName && emailAddress) return `${senderName} <${emailAddress}>`
+  return senderName || emailAddress || addressList?.text || ''
+}
+
 async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST'])
@@ -143,7 +154,7 @@ async function handler(req, res) {
           return {
             uid,
             subject: parsed.subject,
-            from: parsed.from?.text,
+            from: formatAddressList(parsed.from),
             date: parsed.date,
             text: parsed.text,
             html: parsed.html ? sanitizeEmailHtml(parsed.html) : null,
