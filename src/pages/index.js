@@ -179,6 +179,30 @@ export default function Home({
     return domainList[randomIndex].name;
   };
 
+  const clearErrorOnEdit = () => {
+    if (error) setError('');
+  };
+
+  const updateEmailInput = value => {
+    clearErrorOnEdit();
+    setEmailInput(value);
+  };
+
+  const updateSelectedDomain = value => {
+    clearErrorOnEdit();
+    setSelectedDomain(value);
+  };
+
+  const updateLoginEmail = value => {
+    clearErrorOnEdit();
+    setLoginEmail(value);
+  };
+
+  const updateLoginPasskey = value => {
+    clearErrorOnEdit();
+    setLoginPasskey(value);
+  };
+
   useEffect(() => {
     setTurnstileSiteKey(initialTurnstileSiteKey || '');
     setTurnstileRegistrationEnabled(Boolean(initialTurnstileRegistrationEnabled));
@@ -245,7 +269,7 @@ export default function Home({
   };
 
   const handleRandomClick = () => {
-    setEmailInput(generateRandomPrefix());
+    updateEmailInput(generateRandomPrefix());
   };
 
 
@@ -489,7 +513,7 @@ export default function Home({
                     id="login-email"
                     type="email"
                     value={loginEmail}
-                    onChange={event => setLoginEmail(event.target.value)}
+                    onChange={event => updateLoginEmail(event.target.value)}
                     placeholder="you@example.com"
                     disabled={isLoading}
                   />
@@ -502,7 +526,7 @@ export default function Home({
                     id="login-passkey"
                     type="password"
                     value={loginPasskey}
-                    onChange={event => setLoginPasskey(event.target.value)}
+                    onChange={event => updateLoginPasskey(event.target.value)}
                     placeholder="Your passkey"
                     disabled={isLoading}
                   />
@@ -615,14 +639,14 @@ export default function Home({
                           id="email-prefix"
                           type="text"
                           value={emailInput}
-                          onChange={event => setEmailInput(event.target.value)}
+                          onChange={event => updateEmailInput(event.target.value)}
                           placeholder="your-email"
                           disabled={isLoading || started}
                           className="rounded-b-none sm:rounded-b-md sm:rounded-r-none"
                         />
                         <Select
                           value={selectedDomain}
-                          onValueChange={setSelectedDomain}
+                          onValueChange={updateSelectedDomain}
                           disabled={isLoading || started}
                         >
                           <SelectTrigger
