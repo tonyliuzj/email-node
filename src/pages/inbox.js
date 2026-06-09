@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/router';
-import { RefreshCw, Inbox as InboxIcon, ArrowLeft, User, Calendar, Clock, MailOpen, Copy, KeyRound } from 'lucide-react';
+import { RefreshCw, Inbox as InboxIcon, ArrowLeft, User, Calendar, Clock, MailOpen, Copy } from 'lucide-react';
 import { AppShell } from '../components/app-shell';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -104,9 +104,8 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
   const [userEmails, setUserEmails] = useState([])
   const [loading, setLoading] = useState(true)
   const [syncError, setSyncError] = useState('')
-  const [visiblePasskey, setVisiblePasskey] = useState(null)
   const [copyFeedback, setCopyFeedback] = useState({})
-  const [regeneratingPasskey, setRegeneratingPasskey] = useState(false)
+  const primaryEmailAddress = userEmails[0]?.email_address || ''
 
   useEffect(() => {
     
@@ -115,28 +114,7 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
         const response = await fetch('/api/account/info')
         if (response.ok) {
           const data = await response.json()
-          const emails = data.emails || []
-          setUserEmails(emails)
-
-          const storedPasskey = sessionStorage.getItem('email-node:new-passkey')
-          if (storedPasskey) {
-            try {
-              const parsed = JSON.parse(storedPasskey)
-              const matchingEmail = emails.find(email => email.email_address === parsed.email)
-              const ageMs = Date.now() - Number(parsed.createdAt || 0)
-              if (matchingEmail && parsed.passkey && ageMs < 10 * 60 * 1000) {
-                setVisiblePasskey({
-                  emailId: matchingEmail.id,
-                  email: matchingEmail.email_address,
-                  passkey: parsed.passkey,
-                })
-              }
-            } catch (error) {
-              console.error('Failed to restore one-time passkey:', error)
-            } finally {
-              sessionStorage.removeItem('email-node:new-passkey')
-            }
-          }
+          setUserEmails(data.emails || [])
         } else {
           
           router.push('/')
@@ -251,36 +229,6 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
     }
   };
 
-  const regeneratePasskey = async () => {
-    const primaryEmail = userEmails[0];
-    if (!primaryEmail) return;
-
-    setRegeneratingPasskey(true);
-    try {
-      const response = await fetch('/api/account/regenerate-passkey', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ emailId: primaryEmail.id }),
-        credentials: 'include',
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to regenerate passkey.');
-      }
-
-      setVisiblePasskey({
-        emailId: primaryEmail.id,
-        email: primaryEmail.email_address,
-        passkey: data.newPasskey,
-      });
-    } catch (error) {
-      console.error('Passkey regeneration failed:', error);
-      setSyncError(error.message || 'Failed to regenerate passkey.');
-    } finally {
-      setRegeneratingPasskey(false);
-    }
-  };
-
   const formatDate = (dateString) => {
     const date = new Date(dateString);
     const now = new Date();
@@ -344,34 +292,21 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
               </div>
 
               <div className="border-b px-4 py-3">
-                {visiblePasskey ? (
-                  <div className="space-y-2">
-                    <p className="text-xs font-medium text-muted-foreground">One-time passkey</p>
-                    <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-2">
-                      <span className="min-w-0 flex-1 break-all font-mono text-xs">{visiblePasskey.passkey}</span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => copyToClipboard('passkey', visiblePasskey.passkey)}
-                      >
-                        {copyFeedback.passkey ? <span className="text-xs font-semibold">Copied</span> : <Copy className="h-4 w-4" />}
-                      </Button>
-                    </div>
-                    <p className="text-xs text-muted-foreground">Copy it now. Existing passkeys cannot be shown again.</p>
-                  </div>
-                ) : (
+                <p className="mb-2 text-xs font-medium text-muted-foreground">Inbox address</p>
+                <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-2">
+                  <span className="min-w-0 flex-1 break-all font-mono text-xs">
+                    {primaryEmailAddress || 'No inbox address'}
+                  </span>
                   <Button
                     type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={regeneratePasskey}
-                    disabled={regeneratingPasskey || userEmails.length === 0}
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => copyToClipboard('email', primaryEmailAddress)}
+                    disabled={!primaryEmailAddress}
                   >
-                    <KeyRound className={`h-4 w-4 ${regeneratingPasskey ? 'animate-spin' : ''}`} />
-                    {regeneratingPasskey ? 'Regenerating...' : 'Regenerate passkey'}
+                    {copyFeedback.email ? <span className="text-xs font-semibold">Copied</span> : <Copy className="h-4 w-4" />}
                   </Button>
-                )}
+                </div>
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto">

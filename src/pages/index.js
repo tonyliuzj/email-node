@@ -320,17 +320,6 @@ export default function Home({
     }
   };
 
-  const openCreatedInbox = () => {
-    if (createdMailbox?.email && createdMailbox?.passkey && typeof window !== 'undefined') {
-      sessionStorage.setItem('email-node:new-passkey', JSON.stringify({
-        email: createdMailbox.email,
-        passkey: createdMailbox.passkey,
-        createdAt: Date.now(),
-      }));
-    }
-    router.push('/inbox');
-  };
-
   const handleLogin = async () => {
     if (!loginEmail || !loginPasskey) {
       setError('Please enter both email and passkey.');
@@ -592,7 +581,7 @@ export default function Home({
                           {copyFeedback.passkey ? <span className="text-xs font-semibold">Copied</span> : <Copy className="h-4 w-4" />}
                         </Button>
                       </div>
-                      <Button type="button" onClick={openCreatedInbox} className="w-full">
+                      <Button type="button" onClick={() => router.push('/inbox')} className="w-full">
                         <Inbox className="h-4 w-4" />
                         Open inbox
                       </Button>
