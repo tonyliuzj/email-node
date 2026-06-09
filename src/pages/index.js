@@ -145,6 +145,7 @@ export default function Home({
   const [emailInput, setEmailInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [createErrorAddress, setCreateErrorAddress] = useState('');
   const [isLoginView, setIsLoginView] = useState(false);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPasskey, setLoginPasskey] = useState('');
@@ -179,8 +180,15 @@ export default function Home({
     return domainList[randomIndex].name;
   };
 
+  const getCreateAddressKey = (localPart = emailInput, domainName = selectedDomain) => {
+    const local = String(localPart || '').trim().toLowerCase();
+    const domain = String(domainName || '').trim().toLowerCase();
+    return local && domain ? `${local}@${domain}` : '';
+  };
+
   const clearErrorOnEdit = () => {
     if (error) setError('');
+    if (createErrorAddress) setCreateErrorAddress('');
   };
 
   const updateEmailInput = value => {
@@ -275,11 +283,13 @@ export default function Home({
 
   const handleSubmit = async () => {
     if (!emailInput || !selectedDomain) {
+      setCreateErrorAddress('');
       setError('Please enter an email address');
       return;
     }
 
     if (turnstileRegistrationEnabled && turnstileSiteKey && !registerToken) {
+      setCreateErrorAddress('');
       setError('Please complete the Turnstile challenge.');
       return;
     }
@@ -287,6 +297,8 @@ export default function Home({
     
     setIsLoading(true);
     setError('');
+    setCreateErrorAddress('');
+    const attemptedAddressKey = getCreateAddressKey();
 
     try {
       const payload = {
@@ -314,11 +326,14 @@ export default function Home({
         });
         setStarted(true);
         setEmailInput('');
+        setCreateErrorAddress('');
       } else {
+        setCreateErrorAddress(attemptedAddressKey);
         setError(data.error || 'Failed to create account');
       }
     } catch (err) {
       console.error('Account creation error:', err);
+      setCreateErrorAddress(attemptedAddressKey);
       setError('Failed to create account. Please try again.');
     } finally {
       setRegisterToken('');
@@ -400,6 +415,11 @@ export default function Home({
   const fullEmailPreview = emailInput && selectedDomain
     ? `${emailInput}@${selectedDomain}`
     : 'your-email@example.com';
+  const currentCreateAddressKey = getCreateAddressKey();
+  const visibleCreateError = error && (
+    !createErrorAddress ||
+    createErrorAddress === currentCreateAddressKey
+  ) ? error : '';
   const primaryDomain = selectedDomain || domains[0]?.name || 'your-domain.com';
   if (user) {
     return (
@@ -694,9 +714,9 @@ export default function Home({
                     />
                   </div>
                 )}
-                {error && (
+                {visibleCreateError && (
                   <Alert variant="destructive">
-                    <AlertDescription>{error}</AlertDescription>
+                    <AlertDescription>{visibleCreateError}</AlertDescription>
                   </Alert>
                 )}
                 <Button
