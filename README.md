@@ -274,7 +274,7 @@ To build locally instead of using Docker Hub:
 docker compose up -d --build
 ```
 
-When using the installer, set `DOCKER_BUILD=1` before running `email-node.sh` if you want the Docker install mode to build from the cloned checkout instead of pulling the published image.
+When using the installer, Docker mode pulls the published image first and builds from the cloned checkout if the pull fails.
 
 ### Publishing Docker Images
 
