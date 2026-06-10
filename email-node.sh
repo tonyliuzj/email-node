@@ -21,8 +21,8 @@ COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 DOCKER_IMAGE="${DOCKER_IMAGE:-tonyliuzj/email-node:latest}"
 
-DIRECT_DATABASE_PATH="${DIRECT_DATABASE_PATH:-data/${APP_NAME}.sqlite}"
-DOCKER_DATABASE_PATH="${DOCKER_DATABASE_PATH:-/app/data/${APP_NAME}.sqlite}"
+DIRECT_DATABASE_PATH="${DIRECT_DATABASE_PATH:-data/temp-mail.db}"
+DOCKER_DATABASE_PATH="${DOCKER_DATABASE_PATH:-/app/data/temp-mail.db}"
 
 CONTAINER_PORT="${CONTAINER_PORT:-3000}"
 SERVICE_NAME="${SERVICE_NAME:-${APP_NAME}.service}"
@@ -733,9 +733,19 @@ write_direct_env_file() {
   cat > "${INSTALL_DIR}/${APP_ENV_FILE}" <<EOF
 # Email Node Environment Configuration
 
+# Session secret for encrypted sessions
 SESSION_PASSWORD=$SESSION_PASS
+
+# Secret used to encrypt stored IMAP and Turnstile secrets
 DATA_ENCRYPTION_KEY=$DATA_KEY
 
+# Trust the host header behind reverse proxies and custom domains
+AUTH_TRUST_HOST=true
+
+# Database location (default: ./data/temp-mail.db)
+DATABASE_URL=$DIRECT_DATABASE_PATH
+
+# Server port (default: 3000)
 PORT=$HOST_PORT
 EOF
 }
@@ -746,9 +756,19 @@ write_docker_env_files() {
   cat > "${INSTALL_DIR}/${APP_ENV_FILE}" <<EOF
 # Email Node Environment Configuration
 
+# Session secret for encrypted sessions
 SESSION_PASSWORD=$SESSION_PASS
+
+# Secret used to encrypt stored IMAP and Turnstile secrets
 DATA_ENCRYPTION_KEY=$DATA_KEY
 
+# Trust the host header behind reverse proxies and custom domains
+AUTH_TRUST_HOST=true
+
+# Database location (default: /app/data/temp-mail.db)
+DATABASE_URL=$DOCKER_DATABASE_PATH
+
+# Server port (default: 3000)
 PORT=$CONTAINER_PORT
 EOF
 
@@ -766,6 +786,7 @@ ensure_app_env_defaults() {
 
   ensure_env_value "SESSION_PASSWORD" "$(openssl rand -base64 32)" "$env_file"
   ensure_env_value "DATA_ENCRYPTION_KEY" "$(openssl rand -base64 32)" "$env_file"
+  ensure_env_value "AUTH_TRUST_HOST" "true" "$env_file"
 }
 
 # ============================================================
