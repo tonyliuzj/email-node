@@ -16,7 +16,8 @@ A modern, self-hosted IMAP webmail UI with an inbox address system. Email Node d
   Polls IMAP on a configurable interval. View sender, subject, and message preview, then click to read full emails with sanitized HTML rendering. Images from the internet are blocked until the reader clicks **Load images**, so senders cannot track who opened a message.
   - **Attachments** are listed on each message and download with their real name and exact contents. Pictures that are part of a message (logos, signatures) are shown in it.
   - Messages can be marked **read or unread** and **deleted**. These are kept per address on this site, never on your mail server: one message can be addressed to several of your users, so deleting it there would delete it for all of them.
-  - **Load older messages** pages back through mail beyond the newest 50.
+  - **Load older messages** pages back through mail beyond the newest 50. A burst of more than 50 new messages is fetched in order, 50 at a time, so none are skipped.
+  - **Filter** the loaded messages by sender, subject or text, and **Mark all read** in one click.
 
 - **Modern, Responsive UI**
   Clean interface with dark mode support, built with Tailwind CSS and Lucide icons. Mobile-friendly design with smooth animations.
@@ -26,20 +27,20 @@ A modern, self-hosted IMAP webmail UI with an inbox address system. Email Node d
   - Bcrypt password hashing for admin and user passkeys
   - Passkey regeneration with manual masking controls
   - Changing a passkey or the admin password signs out every other device
-  - Optional two-factor authentication (authenticator app) for the admin, with one-time recovery codes
-  - Repeated failed admin logins lock the account for a while, whatever IP they come from
+  - Optional two-factor authentication (authenticator app) for the admin, with one-time recovery codes. With it on, downloading a backup and changing the password ask for a code as well
+  - Repeated failed admin logins lock that client out of the account for a while, and a much higher number from many addresses locks the account for everyone. A stranger cannot keep you out by guessing wrongly from their own address
   - Optional Cloudflare Turnstile CAPTCHA for address creation and login
   - Optional setup token so only you can create the first admin account
 
 - **Admin Panel**
   - First-run setup page for creating the initial admin user
-  - Configure multiple domains with individual IMAP settings
+  - Configure multiple domains with individual IMAP settings, and test a domain's IMAP login with one click
   - Manage Turnstile CAPTCHA settings for address creation and login
   - Browse, search and delete the addresses visitors have created, and expire unused ones automatically
   - Download a backup of the database, with a tested restore
   - Turn on two-factor authentication for the admin account
   - Change admin credentials and customize site title
-  - Dynamic admin path configuration
+  - Dynamic admin path configuration. The path is shown only to a signed-in admin, not to visitors
 
 - **SQLite Storage**
   Self-contained `temp-mail.db` in `data/` directory with automatic schema migrations.
@@ -181,7 +182,7 @@ Access the admin panel at `/admin` (or your custom admin path):
 
 **Two-factor authentication.** Under **Two-factor authentication**, confirm your password, add the shown key to an authenticator app (Google Authenticator, Authy, 1Password, Bitwarden: choose "enter a setup key"), then type the 6-digit code it shows. You are given eight recovery codes, each usable once, so keep them somewhere safe. Turning it on or off signs out every other device. If you lose both the app and the codes, see [Recovering admin access](#recovering-admin-access).
 
-Because failed logins are counted per account, someone who knows your admin username can lock you out for about 15 minutes by guessing wrongly eight times. Pick a username that isn't obvious.
+Failed logins are counted per account **and per client address**. Eight wrong guesses lock that address out of the account for about 15 minutes; your own address is not affected by someone else's guesses. Guesses spread over many addresses are stopped by a higher account-wide ceiling (60 in 15 minutes), which a determined attacker with many machines could use to lock you out for a while. Pick a username that isn't obvious, and keep the admin path to yourself. If you are locked out, wait it out or restart the app.
 
 ### Recovering admin access
 
@@ -238,7 +239,7 @@ Add and manage multiple domains in the admin panel:
 **Important:** Email Node is only a web UI and address manager. Each domain requires an external catch-all IMAP mailbox that receives all emails sent to `*@yourdomain.com`.
 
 **First-run admin setup:**
-Fresh installs start without an admin account. Visit `/setup` to create the first admin user; after setup completes, `/setup` redirects to the admin login page.
+Fresh installs start without an admin account. Visit `/setup` to create the first admin user; after setup completes, `/setup` redirects to the home page. The admin path is not linked from any public page, so bookmark it (`/admin` unless you changed it).
 
 Until setup is finished, whoever reaches `/setup` first becomes the admin. The installer therefore generates a `SETUP_TOKEN`, prints it, and stores it in `.env.local`; the setup page asks for it. If you set up manually, add a `SETUP_TOKEN` (any long random string) to `.env.local` before exposing the app. Without one, setup is open to the first visitor.
 
@@ -266,8 +267,13 @@ src/
 │       ├── [adminPath]/
 │       │   ├── login.js            # Admin authentication
 │       │   ├── logout.js           # Admin logout
-│       │   ├── config.js           # Admin settings management
+│       │   ├── settings.js         # Site, Turnstile and inbox settings
+│       │   ├── config-path.js      # Change the admin path
 │       │   ├── domains.js          # Domain CRUD operations
+│       │   ├── test-imap.js        # Try a domain's IMAP login
+│       │   ├── addresses.js        # Browse, delete and expire addresses
+│       │   ├── backup.js           # Download a copy of the database
+│       │   ├── two-factor.js       # Authenticator-app setup
 │       │   ├── change-username.js  # Change admin username
 │       │   └── change-password.js  # Change admin password
 │       ├── emails.js               # Fetch IMAP messages for user
@@ -279,6 +285,7 @@ src/
 │   ├── session-auth.js             # Checks session cookies against the database
 │   ├── user-auth.js                # Page and route wrappers for signed-in users
 │   ├── security.js                 # Client IP, rate limits, same-origin checks, setup token
+│   ├── password.js                 # Password hashing (native bcrypt, off the main thread)
 │   ├── recipients.js               # Exact recipient matching for IMAP results
 │   ├── admin-auth.js               # Admin sign-in: password, lockout, second factor
 │   ├── totp.js                     # Authenticator-app codes and recovery codes
@@ -311,7 +318,6 @@ email-node.sh                       # Interactive direct/Docker installer
 scripts/
 ├── reset-admin.cjs                 # Reset the admin password / turn off two-factor from the server
 └── restore-backup.cjs              # Validate a backup and put it in place of the database
-tests/                              # Automated tests (npm test)
 ```
 
 ### Key Components
@@ -333,13 +339,9 @@ npm run build
 npm start
 ```
 
-### Vercel Deployment
+### Serverless platforms (Vercel and similar)
 
-Email Node can be deployed to Vercel, but note that SQLite requires a persistent filesystem:
-
-1. Connect your GitHub repository to Vercel
-2. Ensure the `data/` directory is writable and persisted
-3. Consider using a volume or external database for production
+Not supported. Email Node keeps its data in a SQLite file and its rate limits, lockouts and mailbox connection limit in memory, so it needs one long-running process with a disk that persists. Use the Docker or direct install on a server or VM.
 
 ### Docker Deployment
 
@@ -388,9 +390,7 @@ When using the installer, Docker mode pulls the published image first and builds
 
 ### Publishing Docker Images
 
-GitHub Actions publishes the image for `linux/amd64` and `linux/arm64` to Docker Hub after every push to `main`, once lint and type checking pass. Each build is tagged `tonyliuzj/email-node:latest` and `tonyliuzj/email-node:<commit-sha>`. The workflow can also be run by hand from the **Actions** tab, and only publishes when run on `main`.
-
-It needs two repository secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token with write access to `tonyliuzj/email-node`).
+The workflow in `.github/workflows/docker.yml` type-checks, builds the image, starts it as a smoke test and, only when run on `main`, pushes it to Docker Hub for `linux/amd64` and `linux/arm64`. Each build is tagged `tonyliuzj/email-node:latest` and `tonyliuzj/email-node:<commit-sha>`. It needs two repository secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token with write access to `tonyliuzj/email-node`). `.github/workflows/release.yml` attaches the current `email-node.sh` to the `latest` release, which is what the one-line installer downloads.
 
 To publish manually instead:
 
@@ -398,22 +398,45 @@ To publish manually instead:
 docker buildx build --platform linux/amd64,linux/arm64 -t tonyliuzj/email-node:latest --push .
 ```
 
-Pull requests and pushes to other branches run lint, type checking and a production build.
+### Running behind a reverse proxy (HTTPS)
+
+Serve the app over HTTPS. Session cookies are `Secure` in production, so over plain `http://` on a server address nobody can stay signed in (and passwords would cross the network in the clear). Put a reverse proxy in front and keep the app's own port closed to the internet (in Docker, add `BIND_ADDRESS=127.0.0.1` to `.env` so the port is published only on this machine).
+
+```caddyfile
+# Caddy: gets and renews the certificate by itself, and sets X-Forwarded-For
+mail.example.com {
+    reverse_proxy 127.0.0.1:3000
+}
+```
+
+```nginx
+# nginx
+location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+Rate limits and lockouts are per client address, so the app has to know the real one. It reads the address from the `X-Forwarded-For` header, counting from the right (the entry your proxy added; entries to its left were typed by the client), and **only when the connection comes from a private address** such as the proxy on the same machine or Docker network. Connections from a public address are never believed, so a client reaching the app directly cannot invent addresses. See `TRUST_PROXY_HEADERS`, `CLIENT_IP_HEADER` and `TRUSTED_PROXY_HOPS` below for Cloudflare, several proxies, or an app that is reachable directly from a private network.
 
 ### Environment Variables
 
 Most configuration is done through the admin panel. Environment variables:
 
-- `SESSION_PASSWORD` - Secret used for encrypted sessions.
+- `SESSION_PASSWORD` - Secret used for encrypted sessions (at least 32 characters). The app refuses to run while it is still the placeholder from `example.env.local` or has hardly any variety.
 - `DATA_ENCRYPTION_KEY` - Secret used to encrypt stored IMAP and Turnstile secrets. If omitted, the app falls back to `SESSION_PASSWORD`. Keep it unchanged once secrets are stored: a different key cannot decrypt them. When the installer adds a missing key during an update, it copies the current `SESSION_PASSWORD` so existing secrets keep working.
 - `DATABASE_URL` - SQLite file path, absolute or relative to the working directory. Defaults to `data/temp-mail.db` (`/app/data/temp-mail.db` in Docker).
 - `PORT` - Port used by the Next.js server.
 - `SETUP_TOKEN` - Required on the first-run setup page when set. The installer generates one. It has no effect once an admin exists.
 - `SESSION_COOKIE_SECURE` - Session cookies are `Secure` in production, so browsers only keep them over HTTPS (or on `localhost`). Set this to `false` only if you open the app over plain `http://` with a server address; HTTPS is strongly preferred.
-- `TRUST_PROXY_HEADERS` - Client IPs (used for rate limiting) are read from `CF-Connecting-IP`, `X-Real-IP` or the last `X-Forwarded-For` entry. Set this to `false` if the app is reachable directly, without a proxy that sets one of them, so a client cannot forge its address.
+- `TRUST_PROXY_HEADERS` - When a forwarding header is believed for the client address (used for rate limiting and lockouts). Unset (the default): only when the connection comes from a private address, i.e. a proxy beside the app. `true`: always (for a proxy that connects from a public address). `false`: never, always use the connection's own address. Use `false` if clients can reach the app directly and still appear to come from a private address (for example some Docker Desktop setups), so they cannot forge a header.
+- `CLIENT_IP_HEADER` - The one header to read the client address from: `x-forwarded-for` (default), `x-real-ip` or `cf-connecting-ip`. Set `cf-connecting-ip` behind Cloudflare. Only the chosen header is ever read.
+- `TRUSTED_PROXY_HOPS` - How many proxies of yours append to `X-Forwarded-For` (default `1`). With two (say Cloudflare then nginx), the client address is the second entry from the right.
 - `MAX_ATTACHMENT_MB` - Largest attachment that can be downloaded. Default `15`. Bigger files are refused rather than streamed.
 - `MAIL_CLOCK_SKEW_SECONDS` - How far before an address was registered a message may be stamped and still be shown to it. Default `120`. See [Who can read which mail](#who-can-read-which-mail).
 - `IMAP_MAX_CONNECTIONS` - Most inbox refreshes allowed to talk to the mail server at once. Default `8`. Extra refreshes wait a few seconds, then are told the mailbox is busy.
+- `BIND_ADDRESS` - Address Docker Compose publishes the port on. Default `0.0.0.0` (every interface); use `127.0.0.1` behind a reverse proxy on the same machine.
 - `HOST_PORT` - Host port used by Docker Compose.
 - `CONTAINER_PORT` - Container port used by Docker Compose.
 - `DOCKER_IMAGE` - Docker image used by Docker Compose and the installer.
@@ -434,23 +457,25 @@ Messages stay in your mailbox after an address is deleted or expires. Clean them
 ## Security Features
 
 - **Session-based authentication** with `iron-session` for both admin and users
-- **Bcrypt password hashing** for all credentials (admin and user passkeys)
+- **Bcrypt password hashing** for all credentials (admin and user passkeys), with the native `bcrypt` module so hashing runs on worker threads and a flood of login attempts cannot freeze the server. Admin passwords are 12 to 72 bytes, because bcrypt ignores the rest
 - **Secure passkey management** with regeneration and manual masking controls
 - **Optional CAPTCHA protection** via Cloudflare Turnstile for address creation and login
 - **Encrypted stored secrets** for IMAP passwords and Turnstile secret keys
 - **Same-origin checks and rate limits** on mutating API routes. Limits are keyed on a client IP that a visitor cannot forge through `X-Forwarded-For`, and IPv6 clients share a limit per /64.
 - **Exact inbox isolation**: IMAP header search matches substrings, so every message is checked against its real recipients before it is shown. `a@example.com` never sees mail for `ba@example.com`.
-- **Sessions are checked against the database** on every request. Regenerating a passkey, changing the admin password or username, or deleting an address signs out all other sessions.
+- **Sessions are checked against the database** on every request, and a session that does not carry the fingerprint of the current credential is refused, so a forged cookie cannot pick an address. Regenerating a passkey, changing the admin password or username, or deleting an address signs out all other sessions.
 - **Hardened service**: the systemd unit the installer writes runs the app as an ordinary user with a read-only file system except its database and build cache, no new privileges, a private `/tmp`, no device access and no extra capabilities (just `NET_BIND_SERVICE` if you choose a port below 1024). `systemd-analyze security` rates it 3.6 "OK"; an unhardened service scores about 9.6.
 - **Safe attachments**: every download is checked again for ownership (exact recipient, arrived while the address was registered) before a byte is sent. Everything downloads as a file, never rendered in the browser, with a sanitised name; only a few image types are ever shown inline, and never SVG.
 - **Private by default**: the installer creates the env files (which hold the session secret, encryption key and setup token) readable only by their owner, tightens existing ones on update, and keeps the data folder private to the app user.
-- **Bounded mailbox load**: each refresh only fetches mail newer than what the page already has, message bodies are size-capped, messages are parsed one at a time, and the number of simultaneous connections to your mail server is limited.
+- **Bounded mailbox load**: each refresh only asks the mail server about mail since the address was registered, only fetches mail newer than what the page already has, message bodies are size-capped, messages are parsed one at a time, and the number of simultaneous connections to your mail server is limited, both overall and per address, so one visitor cannot use them all.
 - **No cached API responses**: every `/api` response is sent with `Cache-Control: no-store`.
 - **Signing out only signs you out**: visitors and the admin share one session cookie, but signing out as one no longer signs out the other.
 - **Constant-time logins**: an unknown address or admin username takes as long to reject as a wrong password.
 - **Setup protection** with an optional `SETUP_TOKEN`, so a freshly deployed server cannot be claimed by whoever finds it first.
+- **Secrets are never stored in the clear**: saving an IMAP, Turnstile or two-factor secret fails if no encryption key is configured, and placeholder keys are refused.
+- **Private admin path**: it is not in any public page or API answer, and `/setup` no longer points at it.
 - **Two-factor login** for the admin (RFC 6238 codes that cannot be replayed, hashed single-use recovery codes) and per-account lockout after repeated failures.
-- **Remote image blocking**: images from the internet in a message do not load until the reader asks, so tracking pixels reveal nothing.
+- **Remote image blocking**: images from the internet in a message do not load until the reader asks, so tracking pixels reveal nothing. Addresses disguised with tabs, line breaks or backslashes are recognised as what a browser would load, and the page a message is shown in carries its own content security policy that refuses internet images until the reader asks, so this holds even if the sanitiser were fooled.
 - **Strict script policy**: in production, pages only run scripts served by this site (plus Cloudflare Turnstile). There is no `unsafe-inline` or `unsafe-eval`, so injected markup cannot execute code even if it got past the sanitiser.
 - **Reserved admin paths**: the admin path cannot be set to a name such as `inbox` or `setup`, which would make the dashboard unreachable.
 - **Secure cookie settings** with httpOnly, sameSite=strict and secure flags, plus an HSTS header in production.
@@ -473,16 +498,10 @@ Messages stay in your mailbox after an address is deleted or expires. Clean them
 
 ```bash
 npm run dev      # start the dev server
-npm test         # automated tests (Node's built-in test runner, uses a temporary SQLite database)
-npm run lint
-npx tsc --noEmit
+npx tsc --noEmit # type check
 ```
 
-GitHub Actions runs lint, type checking and the tests before every Docker image publish, and on pull requests. Tests need Node.js 22.7 or newer.
-
-`npm run build` uses webpack (`next build --webpack`) on purpose. Next 16's default bundler, Turbopack, puts one inline `<script>` in every page, and the script policy (no `unsafe-inline`) blocks it, which leaves a page that loads but does nothing. CI starts the standalone server and fails if any page contains an inline script, and checks that the standalone build holds only what the server needs. The Docker workflow starts the built image and checks that it serves pages before it is published.
-
-Dependabot proposes dependency updates weekly, and a separate weekly workflow runs `npm audit` on the production dependencies, so a newly published advisory shows up there instead of blocking a deploy.
+`npm run build` uses webpack (`next build --webpack`) on purpose. Next 16's default bundler, Turbopack, puts one inline `<script>` in every page, and the script policy (no `unsafe-inline`) blocks it, which leaves a page that loads but does nothing. The Docker build fails if the standalone output holds anything beyond what the server needs, and the Docker workflow starts the built image and checks that it serves pages before it is published.
 
 ---
 

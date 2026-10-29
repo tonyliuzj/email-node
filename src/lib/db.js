@@ -1,9 +1,9 @@
 import Database from 'better-sqlite3'
-import bcrypt from 'bcryptjs'
 import path from 'path'
 import fs from 'fs'
 import { decryptSecret, encryptSecret, isEncryptedSecret } from './secret-store.js'
 import { ensureColumn } from './schema-migrations.js'
+import { hashPassword, spendPasswordCheckTime, verifyPassword } from './password.js'
 import {
   normalizeDomainName,
   normalizeEmailAddress,
@@ -115,8 +115,6 @@ migrateStoredSecrets()
 // spaces could never log in again.
 db.prepare('UPDATE admin SET username = TRIM(username) WHERE username != TRIM(username)').run()
 
-const TIMING_HASH = bcrypt.hashSync('timing-placeholder', 10)
-
 // Existing addresses start their inactivity clock at the upgrade, so switching retention on later
 // cannot instantly delete everything that was created long ago. The back-fill is part of the same
 // transaction as adding the column (see schema-migrations.js), so nothing can see it half done.
@@ -158,12 +156,14 @@ const MAX_BLOCKED_PREFIXES = 500
 const MAX_ADDRESS_PAGE = 1_000_000
 let lastPurgeAt = 0
 
+const PASSWORD_RULE = 'Password must be at least 12 characters, and no more than 72 bytes.'
+
 export function isSetupRequired() {
   const row = db.prepare('SELECT COUNT(*) as count FROM admin').get()
   return Number(row?.count || 0) === 0
 }
 
-export function createInitialAdmin(username, password) {
+export async function createInitialAdmin(username, password) {
   if (!isSetupRequired()) {
     return { success: false, error: 'Setup has already been completed.' }
   }
@@ -173,10 +173,16 @@ export function createInitialAdmin(username, password) {
     return { success: false, error: 'Username must be at least 3 characters.' }
   }
   if (!isStrongAdminPassword(password)) {
-    return { success: false, error: 'Password must be at least 12 characters.' }
+    return { success: false, error: PASSWORD_RULE }
   }
 
-  const hash = bcrypt.hashSync(password, 10)
+  const hash = await hashPassword(password)
+
+  // Hashing takes a moment, and two setup requests can both get this far. The check and the insert below
+  // run in one step, so only the first one creates the admin.
+  if (!isSetupRequired()) {
+    return { success: false, error: 'Setup has already been completed.' }
+  }
   db.prepare('INSERT INTO admin (username, password_hash) VALUES (?, ?)')
     .run(normalizedUsername, hash)
 
@@ -189,11 +195,11 @@ export function getAdmin(username) {
     .get(String(username || '').trim())
 }
 
-export function updateAdminPassword(username, newPass) {
+export async function updateAdminPassword(username, newPass) {
   if (!isStrongAdminPassword(newPass)) {
-    return { success: false, error: 'Password must be at least 12 characters.' }
+    return { success: false, error: PASSWORD_RULE }
   }
-  const hash = bcrypt.hashSync(newPass, 10)
+  const hash = await hashPassword(newPass)
   const result = db
     .prepare('UPDATE admin SET password_hash = ? WHERE username = ?')
     .run(hash, username)
@@ -356,7 +362,7 @@ export function setTurnstileConfig({
   }
 }
 
-export function createEmail(emailAddress, passkey, domainName) {
+export async function createEmail(emailAddress, passkey, domainName) {
   purgeInactiveAddresses()
   const normalizedEmail = normalizeEmailAddress(emailAddress)
   const normalizedDomain = normalizeDomainName(domainName)
@@ -369,7 +375,7 @@ export function createEmail(emailAddress, passkey, domainName) {
     return { success: false, error: 'This email prefix is reserved and cannot be created' }
   }
 
-  const passkeyHash = bcrypt.hashSync(passkey, 10);
+  const passkeyHash = await hashPassword(passkey);
   try {
     const result = db.prepare(`
       INSERT INTO emails (email_address, passkey_hash, domain_name, last_active_at)
@@ -390,15 +396,15 @@ export function getEmailByAddress(emailAddress) {
   return db.prepare('SELECT * FROM emails WHERE email_address = ?').get(normalizedEmail);
 }
 
-export function verifyEmail(emailAddress, passkey) {
+export async function verifyEmail(emailAddress, passkey) {
   purgeInactiveAddresses()
   const email = getEmailByAddress(emailAddress);
   if (!email) {
-    spendPasswordCheckTime(passkey);
+    await spendPasswordCheckTime(passkey);
     return { success: false, error: 'Email address not found' };
   }
 
-  const isValid = typeof passkey === 'string' && bcrypt.compareSync(passkey, email.passkey_hash);
+  const isValid = await verifyPassword(passkey, email.passkey_hash);
   if (!isValid) {
     return { success: false, error: 'Invalid passkey' };
   }
@@ -406,8 +412,8 @@ export function verifyEmail(emailAddress, passkey) {
   return { success: true, email };
 }
 
-export function regeneratePasskey(emailId, newPasskey) {
-  const passkeyHash = bcrypt.hashSync(newPasskey, 10);
+export async function regeneratePasskey(emailId, newPasskey) {
+  const passkeyHash = await hashPassword(newPasskey);
   const result = db.prepare('UPDATE emails SET passkey_hash = ? WHERE id = ?').run(passkeyHash, emailId);
   return result.changes > 0;
 }
@@ -484,11 +490,7 @@ export function deleteDomainWithAddresses(domainId) {
   return remove(domainId)
 }
 
-// Checks a secret against a throwaway hash so a failed lookup takes as long as a real check instead of
-// revealing whether the account exists.
-export function spendPasswordCheckTime(secret) {
-  bcrypt.compareSync(typeof secret === 'string' ? secret : '', TIMING_HASH)
-}
+export { spendPasswordCheckTime }
 
 export function getAddressRetentionDays() {
   const days = Number.parseInt(getSetting('address_retention_days') || '0', 10)

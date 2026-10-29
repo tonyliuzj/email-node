@@ -35,7 +35,7 @@ async function handler(req, res) {
     const newPasskey = nanoid(24)
 
     // Update passkey in database
-    const success = regeneratePasskey(emailId, newPasskey)
+    const success = await regeneratePasskey(emailId, newPasskey)
 
     if (!success) {
       return res.status(500).json({ error: 'Failed to regenerate passkey' })

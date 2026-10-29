@@ -9,7 +9,7 @@ import {
   getSiteTitle,
 } from '../../../lib/db'
 import { authenticateAdmin, confirmAdminPassword } from '../../../lib/admin-auth'
-import { protectMutation } from '../../../lib/security'
+import { getClientIp, protectMutation } from '../../../lib/security'
 import { decryptSecret, encryptSecret } from '../../../lib/secret-store'
 import { requireAdmin, startAdminSession } from '../../../lib/session-auth'
 import {
@@ -59,7 +59,7 @@ export default withSessionRoute(async function handler(req, res) {
         return res.status(409).json({ error: 'Two-factor authentication is already on.' })
       }
 
-      const check = confirmAdminPassword(admin.username, password)
+      const check = await confirmAdminPassword(admin.username, password)
       if (check === 'locked') return res.status(429).json({ error: LOCKED_MESSAGE })
       if (check !== 'ok') return res.status(401).json({ error: 'Password is incorrect.' })
 
@@ -97,7 +97,7 @@ export default withSessionRoute(async function handler(req, res) {
         return res.status(409).json({ error: 'Two-factor authentication is not on.' })
       }
 
-      const result = authenticateAdmin({ username: admin.username, password, code })
+      const result = await authenticateAdmin({ username: admin.username, password, code, ip: getClientIp(req) })
       if (result.status === 'locked') return res.status(429).json({ error: LOCKED_MESSAGE })
       if (result.status !== 'ok') {
         return res.status(401).json({ error: 'Password or code is incorrect.' })

@@ -1,5 +1,5 @@
 import { withSessionRoute, withSessionSsr } from './session.js'
-import { getSessionEmail } from './session-auth.js'
+import { getSessionEmail, visibleAdminPath } from './session-auth.js'
 
 export function withUserAuth(handler) {
   return withSessionRoute(async function(req, res) {
@@ -22,6 +22,8 @@ export function withUser(handler) {
   return withSessionSsr(async function(context) {
     const { req } = context;
     context.user = await getSessionEmail(req);
+    // Null for everyone but a signed-in administrator, so the admin address is not shown to visitors.
+    context.adminLink = visibleAdminPath(req);
     return handler(context);
   });
 }

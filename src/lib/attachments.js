@@ -74,6 +74,8 @@ export function listAttachments(structure) {
       filename: cleanFilename(filename, isEmbeddedMessage ? 'forwarded-message.eml' : 'attachment'),
       type,
       size: decodedSize(node),
+      // The size as sent, before decoding: what the download should receive from the mail server.
+      encodedSize: Number.isFinite(node.size) ? node.size : 0,
       // How the part was encoded for transport; the download decodes it with this (see part-stream.js).
       encoding: String(node.encoding || '').toLowerCase(),
       inline: isInlineImage,

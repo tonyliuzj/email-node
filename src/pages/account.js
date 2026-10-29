@@ -11,13 +11,13 @@ import { Label } from '../components/ui/label';
 import { Skeleton } from '../components/ui/skeleton';
 import { withUser } from '../lib/user-auth';
 
-export const getServerSideProps = withUser(async ({ user }) => {
+export const getServerSideProps = withUser(async ({ user, adminLink }) => {
   try {
-    const { getAdminPath, getSiteTitle } = await import('../lib/db');
+    const { getSiteTitle } = await import('../lib/db');
     return {
       props: {
         siteTitle: getSiteTitle() || 'Email Node',
-        adminPath: getAdminPath(),
+        adminPath: adminLink,
         user: user || null,
       },
     };
@@ -25,7 +25,7 @@ export const getServerSideProps = withUser(async ({ user }) => {
     return {
       props: {
         siteTitle: 'Email Node',
-        adminPath: 'admin',
+        adminPath: null,
         user: user || null,
       },
     };

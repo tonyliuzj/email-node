@@ -4,7 +4,7 @@ import { getDomainForImap } from '../../../lib/db.js'
 import { withSessionRoute } from '../../../lib/session.js'
 import { getSessionEmail } from '../../../lib/session-auth.js'
 import { applyRateLimit } from '../../../lib/security.js'
-import { imapLimiter } from '../../../lib/imap-limit.js'
+import { imapLimiter, perAddressCap } from '../../../lib/imap-limit.js'
 import {
   CONNECT_TIMEOUT_MS,
   MAILBOX_OPERATION_TIMEOUT_MS,
@@ -48,14 +48,29 @@ async function handler(req, res) {
     return res.status(500).json({ error: 'Domain configuration not found' })
   }
 
-  const { client, close: closeClient } = createImapSession(domain)
+  const releaseAddress = perAddressCap.tryAcquire(userEmail.id)
+  if (!releaseAddress) {
+    return res.status(429).json({ error: 'Too many mailbox requests at once. Please wait a moment.' })
+  }
 
   let releaseSlot
   try {
     releaseSlot = await imapLimiter.acquire()
   } catch {
+    releaseAddress()
     return res.status(503).json({ error: 'The mailbox is busy right now. Please try again in a moment.' })
   }
+
+  let session
+  try {
+    session = createImapSession(domain)
+  } catch (error) {
+    releaseSlot()
+    releaseAddress()
+    console.error('Could not set up the mailbox connection:', error)
+    return res.status(500).json({ error: 'Could not download the attachment.' })
+  }
+  const { client, close: closeClient } = session
 
   try {
     await withTimeout(client.connect(), CONNECT_TIMEOUT_MS, 'Timed out connecting to mailbox.', closeClient)
@@ -90,7 +105,10 @@ async function handler(req, res) {
 
       // The part is fetched raw and decoded here (see part-stream.js). The limit is on the encoded bytes, which
       // are about a third more than the file, in case a server sends more than the part list promised.
-      const chunks = readPartChunks(client, uid, part, { maxBytes: Math.ceil(MAX_ATTACHMENT_BYTES * 1.4) + 64 * 1024 })
+      const chunks = readPartChunks(client, uid, part, {
+        maxBytes: Math.ceil(MAX_ATTACHMENT_BYTES * 1.4) + 64 * 1024,
+        expectedBytes: attachment.encodedSize,
+      })
 
       // The first chunk is read before anything is sent, so a part that is not there is a clean 404 instead
       // of an empty download.
@@ -141,6 +159,7 @@ async function handler(req, res) {
       }
     } finally {
       releaseSlot()
+      releaseAddress()
     }
   }
 }

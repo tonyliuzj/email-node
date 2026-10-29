@@ -2,7 +2,7 @@ import { withSessionRoute } from '../../../lib/session'
 import { getAdminPath, isSetupRequired } from '../../../lib/db'
 import { authenticateAdmin } from '../../../lib/admin-auth'
 import { startAdminSession } from '../../../lib/session-auth'
-import { protectMutation } from '../../../lib/security'
+import { getClientIp, protectMutation } from '../../../lib/security'
 
 export default withSessionRoute(async (req, res) => {
   if (isSetupRequired()) {
@@ -24,7 +24,7 @@ export default withSessionRoute(async (req, res) => {
   }
 
   const { username, password, code } = req.body || {}
-  const result = authenticateAdmin({ username, password, code })
+  const result = await authenticateAdmin({ username, password, code, ip: getClientIp(req) })
 
   if (result.status === 'locked') {
     return res.status(429).json({ error: 'Too many failed attempts. Try again in a few minutes.' })

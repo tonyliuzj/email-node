@@ -5,8 +5,8 @@ import { protectMutation } from '../../lib/security.js'
 import { sanitizeEmailHtml } from '../../lib/email-sanitizer.js'
 import { isAddressedTo } from '../../lib/recipients.js'
 import { hasBlockedRemoteImages } from '../../lib/remote-images.js'
-import { imapLimiter } from '../../lib/imap-limit.js'
-import { arrivedAfterRegistration } from '../../lib/mail-window.js'
+import { imapLimiter, perAddressCap } from '../../lib/imap-limit.js'
+import { arrivedAfterRegistration, parseSqliteTimestamp } from '../../lib/mail-window.js'
 import { limitMessageBody } from '../../lib/message-limits.js'
 import { listAttachments } from '../../lib/attachments.js'
 import { parseMessage } from '../../lib/message-parser.js'
@@ -35,8 +35,17 @@ function formatAddressList(addressList) {
 
 // Candidate messages only: IMAP header search matches substrings ("a@x.com" also matches "ba@x.com"),
 // so every result is checked against its exact recipients after it is parsed.
-function recipientQuery(address) {
+//
+// Mail from before the address was registered is never shown (see mail-window.js), so the server is asked
+// only about mail since then, and does not have to look through the whole mailbox on every refresh. SINCE
+// compares whole days in the mail server's own time zone, so two days of margin keeps it a safe superset.
+const SEARCH_MARGIN_MS = 2 * 24 * 60 * 60 * 1000
+
+function recipientQuery(address, createdAt) {
+  const registered = parseSqliteTimestamp(createdAt)
+
   return {
+    ...(registered === null ? {} : { since: new Date(registered - SEARCH_MARGIN_MS) }),
     or: [
       { header: { to: address } },
       { header: { cc: address } },
@@ -80,15 +89,30 @@ async function handler(req, res) {
   const knownValidity = req.body?.uidValidity === undefined ? '' : String(req.body.uidValidity)
   const wantsOlder = Number.isInteger(requestedBefore) && requestedBefore > 0
 
-  const { client, imapErrors, close: closeClient } = createImapSession(domain)
+  const releaseAddress = perAddressCap.tryAcquire(userEmail.id)
+  if (!releaseAddress) {
+    return res.status(429).json({ error: 'Too many mailbox requests at once. Please wait a moment.' })
+  }
 
   // Taken right before the try so that every way out of it, including errors, gives the slot back.
   let releaseSlot
   try {
     releaseSlot = await imapLimiter.acquire()
   } catch {
+    releaseAddress()
     return res.status(503).json({ error: 'The mailbox is busy right now. Please try again in a moment.' })
   }
+
+  let session
+  try {
+    session = createImapSession(domain)
+  } catch (error) {
+    releaseSlot()
+    releaseAddress()
+    console.error('Could not set up the mailbox connection:', error)
+    return res.status(500).json({ error: 'Failed to fetch mailbox messages.' })
+  }
+  const { client, imapErrors, close: closeClient } = session
 
   try {
     await withTimeout(
@@ -115,26 +139,35 @@ async function handler(req, res) {
     let highestUid = 0
     let lowestUid = 0
     let hasMore = false
+    let more = false
     let reportsPaging = false
     const structures = new Map()
+    const sizes = new Map()
     let states = new Map()
     let readyUids = []
 
     try {
       const found = await withTimeout(
-        client.search(recipientQuery(requestedAddress), { uid: true }),
+        client.search(recipientQuery(requestedAddress, userEmail.created_at), { uid: true }),
         MAILBOX_OPERATION_TIMEOUT_MS,
         'Timed out searching mailbox.',
         closeClient
       )
       const uids = Array.isArray(found) ? [...found].sort((a, b) => a - b) : []
 
-      // UIDs ascend with arrival, so the newest 50 candidates are the last 50.
+      // UIDs ascend with arrival. A first load shows the newest 50. A refresh continues from where the page
+      // stopped and takes the OLDEST 50 it has not seen, then says there is more if so, so a burst of mail
+      // is handed over in order and nothing is skipped.
       let candidateUids
       if (wantsOlder) {
         candidateUids = validityMatches ? uids.filter(uid => uid < requestedBefore).slice(-MAX_MESSAGES) : []
+      } else if (sinceUid > 0) {
+        const unseen = uids.filter(uid => uid > sinceUid)
+        candidateUids = unseen.slice(0, MAX_MESSAGES)
+        more = unseen.length > candidateUids.length
+        highestUid = candidateUids.length > 0 ? candidateUids[candidateUids.length - 1] : 0
       } else {
-        candidateUids = uids.filter(uid => uid > sinceUid).slice(-MAX_MESSAGES)
+        candidateUids = uids.slice(-MAX_MESSAGES)
         highestUid = candidateUids.length > 0 ? candidateUids[candidateUids.length - 1] : 0
       }
 
@@ -150,11 +183,12 @@ async function handler(req, res) {
       const ownUids = []
       if (candidateUids.length > 0) {
         await withTimeout((async () => {
-          for await (const message of client.fetch(candidateUids, { uid: true, internalDate: true, bodyStructure: true }, { uid: true })) {
+          for await (const message of client.fetch(candidateUids, { uid: true, internalDate: true, bodyStructure: true, size: true }, { uid: true })) {
             // Only mail that arrived while this address was registered is its owner's (see mail-window.js).
             if (arrivedAfterRegistration(message.internalDate, userEmail.created_at)) {
               ownUids.push(message.uid)
               structures.set(message.uid, message.bodyStructure)
+              sizes.set(message.uid, Number(message.size) || 0)
             }
           }
         })(), MAILBOX_OPERATION_TIMEOUT_MS, 'Timed out reading message dates.', closeClient)
@@ -186,7 +220,7 @@ async function handler(req, res) {
       lock.release()
     }
 
-    const paging = reportsPaging ? { lowestUid, hasMore } : {}
+    const paging = { ...(reportsPaging ? { lowestUid, hasMore } : {}), ...(more ? { more } : {}) }
 
     if (rawMessages.length === 0) {
       return res.status(200).json({ emails: [], uidValidity, reset, highestUid, ...paging })
@@ -209,7 +243,9 @@ async function handler(req, res) {
           text,
           html,
           hasRemoteImages: hasBlockedRemoteImages(html),
-          truncated,
+          // Only the first part of a big message is downloaded, so a body that sits after a large attachment can
+          // be missing; say so instead of showing an empty message.
+          truncated: truncated || (sizes.get(uid) || 0) > MAX_EMAIL_BYTES,
           read: Boolean(states.get(uid)?.read),
           attachments: listAttachments(structures.get(uid)),
         })
@@ -243,6 +279,7 @@ async function handler(req, res) {
       }
     } finally {
       releaseSlot()
+      releaseAddress()
     }
   }
 }

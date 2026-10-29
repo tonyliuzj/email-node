@@ -9,7 +9,7 @@ export function AppShell({
   siteTitle = 'Email Node',
   user,
   adminUser,
-  adminPath = 'admin',
+  adminPath = null,
   fullWidth = false,
   hideFooter = false,
   mainClassName,
@@ -34,7 +34,8 @@ export function AppShell({
       { href: '/inbox', label: 'Inbox', icon: Inbox },
       { href: '/account', label: 'Account', icon: User },
     ] : []),
-    { href: adminUser ? `/${adminPath}` : `/${adminPath}/login`, label: 'Admin', icon: Settings },
+    // Only shown to someone who already knows the admin path (the administrator, or on the admin pages).
+    ...(adminPath ? [{ href: adminUser ? `/${adminPath}` : `/${adminPath}/login`, label: 'Admin', icon: Settings }] : []),
   ];
 
   return (

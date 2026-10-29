@@ -91,9 +91,9 @@ function TurnstileWidget({ siteKey, resetKey, onVerify, onExpire }) {
   return <div ref={containerRef} className="cf-turnstile" />;
 }
 
-export const getServerSideProps = withUser(async ({ user }) => {
+export const getServerSideProps = withUser(async ({ user, adminLink }) => {
   try {
-    const { getAdminPath, getSiteTitle, getTurnstileConfig, isSetupRequired } = await import('../lib/db');
+    const { getSiteTitle, getTurnstileConfig, isSetupRequired } = await import('../lib/db');
     if (isSetupRequired()) {
       return {
         redirect: {
@@ -108,7 +108,7 @@ export const getServerSideProps = withUser(async ({ user }) => {
     return {
       props: {
         siteTitle,
-        adminPath: getAdminPath(),
+        adminPath: adminLink,
         user: user || null,
         turnstileSiteKey: turnstile.siteKey || '',
         turnstileRegistrationEnabled: Boolean(turnstile.registrationEnabled),
@@ -119,7 +119,7 @@ export const getServerSideProps = withUser(async ({ user }) => {
     return {
       props: {
         siteTitle: 'Email Node',
-        adminPath: 'admin',
+        adminPath: null,
         user: user || null,
         turnstileSiteKey: '',
         turnstileRegistrationEnabled: false,

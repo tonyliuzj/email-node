@@ -27,7 +27,7 @@ export default withSessionRoute(async (req, res) => {
     return res.status(400).json({ error: 'Passwords do not match.' })
   }
 
-  const result = createInitialAdmin(username, password)
+  const result = await createInitialAdmin(username, password)
   if (!result.success) {
     return res.status(400).json({ error: result.error })
   }

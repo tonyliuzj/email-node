@@ -10,13 +10,14 @@ import { Label } from '../components/ui/label'
 import { withSessionSsr } from '../lib/session'
 
 export const getServerSideProps = withSessionSsr(async () => {
-  const { getAdminPath, isSetupRequired } = await import('../lib/db')
+  const { isSetupRequired } = await import('../lib/db')
   const { isSetupTokenRequired } = await import('../lib/security')
 
   if (!isSetupRequired()) {
     return {
+      // Not the admin login: that would tell every visitor where it is.
       redirect: {
-        destination: `/${getAdminPath()}/login`,
+        destination: '/',
         permanent: false,
       },
     }
@@ -24,14 +25,13 @@ export const getServerSideProps = withSessionSsr(async () => {
 
   return {
     props: {
-      adminPath: getAdminPath(),
       siteTitle: 'Setup Email Node',
       setupTokenRequired: isSetupTokenRequired(),
     },
   }
 })
 
-export default function Setup({ adminPath, setupTokenRequired }) {
+export default function Setup({ setupTokenRequired }) {
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -64,7 +64,7 @@ export default function Setup({ adminPath, setupTokenRequired }) {
   }
 
   return (
-    <AppShell siteTitle="Setup Email Node" adminPath={adminPath}>
+    <AppShell siteTitle="Setup Email Node">
       <section className="mx-auto flex min-h-[calc(100vh-14rem)] w-full max-w-sm items-center py-8">
         <Card className="w-full shadow-lg">
           <CardHeader className="items-center space-y-1 text-center">

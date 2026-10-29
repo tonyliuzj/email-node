@@ -22,9 +22,11 @@ const fs = require('fs')
 const path = require('path')
 const readline = require('readline')
 const Database = require('better-sqlite3')
-const bcrypt = require('bcryptjs')
+const bcrypt = require('bcrypt')
 
 const MIN_PASSWORD_LENGTH = 12
+// bcrypt only reads the first 72 bytes, so a longer password would be checked as if it were cut off.
+const MAX_PASSWORD_BYTES = 72
 
 function usage() {
   return [
@@ -120,8 +122,12 @@ async function main() {
         console.error(`The password must be at least ${MIN_PASSWORD_LENGTH} characters. Nothing was changed.`)
         return 1
       }
+      if (Buffer.byteLength(password) > MAX_PASSWORD_BYTES) {
+        console.error(`The password must be no more than ${MAX_PASSWORD_BYTES} bytes. Nothing was changed.`)
+        return 1
+      }
 
-      db.prepare('UPDATE admin SET password_hash = ? WHERE id = ?').run(bcrypt.hashSync(password, 10), admin.id)
+      db.prepare('UPDATE admin SET password_hash = ? WHERE id = ?').run(await bcrypt.hash(password, 10), admin.id)
       console.log(`Password changed for "${admin.username}".`)
     }
 

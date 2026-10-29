@@ -1,4 +1,5 @@
 import { getIronSession } from 'iron-session'
+import { assertUsableSecret } from './secret-store.js'
 
 function getSessionPassword() {
   if (!process.env.SESSION_PASSWORD) {
@@ -8,7 +9,7 @@ function getSessionPassword() {
     )
   }
 
-  return process.env.SESSION_PASSWORD
+  return assertUsableSecret('SESSION_PASSWORD', process.env.SESSION_PASSWORD)
 }
 
 const sessionOptions = {

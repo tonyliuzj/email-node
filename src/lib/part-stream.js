@@ -87,7 +87,12 @@ export function decoderFor(encoding) {
 
 // Yields the raw (still encoded) bytes of a part, one chunk at a time, and stops with PartTooLargeError if the
 // server sends more than maxBytes. The caller must already hold the mailbox lock.
-export async function* readPartChunks(client, uid, part, { maxBytes, chunkBytes = CHUNK_BYTES } = {}) {
+//
+// A chunk shorter than asked for normally means the end of the part, but a server is allowed to answer with
+// less, and stopping there would hand over a cut-off file with no error. expectedBytes is the size the message
+// structure promised: a short chunk only ends the download once that many bytes have arrived. Without it, a
+// short chunk is taken as the end.
+export async function* readPartChunks(client, uid, part, { maxBytes, expectedBytes, chunkBytes = CHUNK_BYTES } = {}) {
   let received = 0
 
   while (true) {
@@ -103,6 +108,8 @@ export async function* readPartChunks(client, uid, part, { maxBytes, chunkBytes 
     if (Number.isFinite(maxBytes) && received > maxBytes) throw new PartTooLargeError()
 
     yield chunk
-    if (chunk.length < chunkBytes) return
+
+    const reachedExpectedEnd = Number.isFinite(expectedBytes) ? received >= expectedBytes : true
+    if (chunk.length < chunkBytes && reachedExpectedEnd) return
   }
 }

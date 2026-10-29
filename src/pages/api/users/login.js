@@ -34,7 +34,7 @@ async function handler(req, res) {
     }
 
 
-    const verificationResult = verifyEmail(normalizedEmail, passkey)
+    const verificationResult = await verifyEmail(normalizedEmail, passkey)
     if (!verificationResult.success) {
       return res.status(401).json({ error: 'Invalid email or passkey' })
     }

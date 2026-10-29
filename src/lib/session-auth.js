@@ -1,5 +1,5 @@
 import crypto from 'crypto'
-import { getAdmin, getEmailById, purgeInactiveAddresses, touchAddressActivity } from './db.js'
+import { getAdmin, getAdminPath, getEmailById, purgeInactiveAddresses, touchAddressActivity } from './db.js'
 
 const ACTIVITY_TOUCH_MS = 60 * 60 * 1000
 
@@ -76,10 +76,10 @@ export async function getSessionEmail(req) {
     return null
   }
 
-  if (typeof stored.v === 'undefined') {
-    // Issued before sessions were bound to a credential: accept it once and bind it now.
-    await startUserSession(req, email)
-  } else if (stored.v !== credentialFingerprint(email.passkey_hash)) {
+  // A session that does not carry the fingerprint of the current passkey is not accepted. That includes one
+  // with no fingerprint at all: it cannot prove it was issued by this server, and anyone who knew the session
+  // secret could otherwise write one for any address.
+  if (stored.v !== credentialFingerprint(email.passkey_hash)) {
     await dropStoredEmail(req)
     return null
   }
@@ -105,6 +105,12 @@ export function getSessionAdmin(req) {
   if (stored.v !== credentialFingerprint(adminCredential(admin))) return null
 
   return { username: admin.username }
+}
+
+// The admin path is only worth anything as a secret if it is not printed on every page. Pages and API
+// answers give it to a signed-in administrator, and to nobody else.
+export function visibleAdminPath(req) {
+  return getSessionAdmin(req) ? getAdminPath() : null
 }
 
 export function requireAdmin(req, res) {

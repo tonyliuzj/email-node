@@ -24,7 +24,7 @@ import {
 } from '../../components/ui/table'
 import {
   Ban, Globe, Key, LogOut, MailCheck,
-  Settings, ShieldCheck, User, Edit, Trash2, Plus, Save, X, Server
+  Settings, ShieldCheck, User, Edit, Trash2, Plus, Save, X, Server, PlugZap
 } from 'lucide-react'
 
 const toBoolean = value => ['1', 1, true, 'true', 'yes', 'on'].includes(value)
@@ -96,7 +96,8 @@ export const getServerSideProps = withSessionSsr(async ({ req, params }) => {
 })
 
 export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitle }) {
-  const [pwd, setPwd] = useState({ current: '', new: '' })
+  const [pwd, setPwd] = useState({ current: '', new: '', code: '' })
+  const [testingDomainId, setTestingDomainId] = useState(null)
   const [newPath, setNewPath] = useState(adminPath || '')
   const [newUsername, setNewUsername] = useState(admin.username)
   const [domains, setDomains] = useState([])
@@ -178,10 +179,33 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
       body: JSON.stringify({
         currentPassword: pwd.current,
         newPassword: pwd.new,
+        code: pwd.code,
       }),
     })
     const data = await res.json()
+    if (res.ok) setPwd({ current: '', new: '', code: '' })
     notifyResult(res.ok, res.ok ? 'Password changed successfully.' : data.error || 'Error changing password.')
+  }
+
+  const testDomain = async domain => {
+    setTestingDomainId(domain.id)
+    try {
+      const res = await fetch(`/api/${adminPath}/test-imap`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: domain.id }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.ok) {
+        toast.success(`${domain.name}: connected. ${data.messages} message${data.messages === 1 ? '' : 's'} in the mailbox.`)
+      } else {
+        toast.error(`${domain.name}: ${data.error || 'Could not test the connection.'}`)
+      }
+    } catch {
+      toast.error('Could not test the connection. Please try again.')
+    } finally {
+      setTestingDomainId(null)
+    }
   }
 
   const changeUsername = async e => {
@@ -445,6 +469,15 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                             </TableCell>
                             <TableCell className="text-right">
                               <div className="flex justify-end gap-2">
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => testDomain(domain)}
+                                  disabled={testingDomainId === domain.id}
+                                  title="Test the IMAP connection"
+                                >
+                                  <PlugZap className="h-4 w-4 text-muted-foreground hover:text-primary" />
+                                </Button>
                                 <Button variant="ghost" size="icon" onClick={() => editDomain(domain)} title="Edit">
                                   <Edit className="h-4 w-4 text-muted-foreground hover:text-primary" />
                                 </Button>
@@ -825,6 +858,16 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                         type="password"
                         value={pwd.new}
                         onChange={e => setPwd({ ...pwd, new: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Authenticator code</Label>
+                      <Input
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        placeholder="Only if two-factor is on"
+                        value={pwd.code}
+                        onChange={e => setPwd({ ...pwd, code: e.target.value })}
                       />
                     </div>
                     <Button type="submit">

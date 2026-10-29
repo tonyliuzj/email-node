@@ -9,7 +9,8 @@ import { protectMutation } from '../../../lib/security'
 import { requireAdmin } from '../../../lib/session-auth'
 
 // A backup holds every password hash and the encrypted IMAP, Turnstile and two-factor secrets, so it is
-// only given to a signed-in admin who types their password again, and only a few times an hour.
+// only given to a signed-in admin who types their password again (and a two-factor code, when that is on),
+// and only a few times an hour.
 export default withSessionRoute(async function handler(req, res) {
   const { adminPath } = req.query
   if (adminPath !== getAdminPath()) {
@@ -28,9 +29,15 @@ export default withSessionRoute(async function handler(req, res) {
     return
   }
 
-  const check = confirmAdminPassword(admin.username, req.body?.password)
+  const check = await confirmAdminPassword(admin.username, req.body?.password, { code: req.body?.code })
   if (check === 'locked') {
     return res.status(429).json({ error: 'Too many failed attempts. Try again in a few minutes.' })
+  }
+  if (check === 'code-required') {
+    return res.status(401).json({ error: 'Enter the code from your authenticator app.', totpRequired: true })
+  }
+  if (check === 'invalid-code') {
+    return res.status(401).json({ error: 'That code is not correct.', totpRequired: true })
   }
   if (check !== 'ok') {
     return res.status(401).json({ error: 'Password is incorrect.' })

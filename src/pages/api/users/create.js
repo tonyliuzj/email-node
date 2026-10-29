@@ -51,7 +51,7 @@ async function handler(req, res) {
       // Random aliases can collide with an existing address, so try a few before giving up.
       for (let attempt = 0; attempt < RANDOM_ADDRESS_ATTEMPTS; attempt += 1) {
         emailAddress = `${randomWords({ exactly: 2, join: '.' })}@${activeDomain.name}`;
-        emailResult = createEmail(emailAddress, passkey, activeDomain.name);
+        emailResult = await createEmail(emailAddress, passkey, activeDomain.name);
         if (emailResult.success || emailResult.error !== 'Email address already taken') break;
       }
     } else if (emailType === 'custom') {
@@ -62,7 +62,7 @@ async function handler(req, res) {
       if (!emailAddress || !emailAddress.endsWith(`@${activeDomain.name}`)) {
         return res.status(400).json({ error: 'Invalid email address' });
       }
-      emailResult = createEmail(emailAddress, passkey, activeDomain.name);
+      emailResult = await createEmail(emailAddress, passkey, activeDomain.name);
     } else if (emailType === 'username') {
       const localPart = normalizeEmailLocalPart(userEmail)
       if (!localPart) {
@@ -70,7 +70,7 @@ async function handler(req, res) {
       }
 
       emailAddress = buildEmailAddress(localPart, activeDomain.name);
-      emailResult = createEmail(emailAddress, passkey, activeDomain.name);
+      emailResult = await createEmail(emailAddress, passkey, activeDomain.name);
     } else {
       return res.status(400).json({ error: 'Invalid email type' });
     }

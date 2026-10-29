@@ -74,8 +74,12 @@ export function normalizeSiteTitle(value) {
   return title
 }
 
+// bcrypt only reads the first 72 bytes of a password, so a longer one would be accepted here and then
+// checked as if it were cut off.
+export const MAX_PASSWORD_BYTES = 72
+
 export function isStrongAdminPassword(value) {
-  return typeof value === 'string' && value.length >= 12
+  return typeof value === 'string' && value.length >= 12 && Buffer.byteLength(value) <= MAX_PASSWORD_BYTES
 }
 
 export function toBoolean(value) {

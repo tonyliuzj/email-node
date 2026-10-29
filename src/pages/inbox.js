@@ -2,16 +2,17 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/router';
-import { RefreshCw, Inbox as InboxIcon, ArrowLeft, User, Calendar, Clock, MailOpen, Copy, Download, Paperclip, Trash2 } from 'lucide-react';
+import { RefreshCw, Inbox as InboxIcon, ArrowLeft, User, Calendar, Clock, MailOpen, Copy, Download, Paperclip, Trash2, Search, CheckCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { AppShell } from '../components/app-shell';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
+import { Input } from '../components/ui/input';
 import { Separator } from '../components/ui/separator';
 import { Skeleton } from '../components/ui/skeleton';
 import { withUser } from '../lib/user-auth';
-import { restoreRemoteImages } from '../lib/remote-images';
+import { buildMessageDocument, restoreRemoteImages } from '../lib/remote-images';
 import {
   INLINE_IMAGE_TYPES,
   MAX_INLINE_IMAGE_BYTES,
@@ -21,13 +22,15 @@ import {
 } from '../lib/inline-images';
 import { cn } from '../lib/utils';
 
-export const getServerSideProps = withUser(async ({ user }) => {
+const MAX_CATCH_UP_ROUNDS = 20;
+
+export const getServerSideProps = withUser(async ({ user, adminLink }) => {
   try {
-    const { getAdminPath, getInboxRefreshSeconds, getSiteTitle } = await import('../lib/db');
+    const { getInboxRefreshSeconds, getSiteTitle } = await import('../lib/db');
     return {
       props: {
         siteTitle: getSiteTitle() || 'Email Node',
-        adminPath: getAdminPath(),
+        adminPath: adminLink,
         inboxRefreshSeconds: getInboxRefreshSeconds(),
         user: user || null,
       }
@@ -36,7 +39,7 @@ export const getServerSideProps = withUser(async ({ user }) => {
     return {
       props: {
         siteTitle: 'Email Node',
-        adminPath: 'admin',
+        adminPath: null,
         inboxRefreshSeconds: 10,
         user: user || null,
       }
@@ -113,6 +116,7 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
   // Paging back through older mail.
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [filter, setFilter] = useState('');
   const lowestUidRef = useRef(0);
   // UIDs of the messages whose remote images the reader chose to load.
   const [imagesLoadedFor, setImagesLoadedFor] = useState(() => new Set());
@@ -163,55 +167,60 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
 
     try {
       setIsRefreshing(true);
-      const res = await fetch('/api/emails', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: primaryEmail.email_address,
-          sinceUid: highestUidRef.current || undefined,
-          uidValidity: uidValidityRef.current || undefined,
-        }),
-        credentials: 'include',
-      });
-      if (res.status === 401 || res.status === 403) {
-        router.push('/');
-        return;
-      }
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Mailbox sync failed.');
-      }
-      if (data.warning) {
-        toast.warning(data.warning);
-      }
-      // The mailbox was rebuilt on the server, so the UIDs we remember no longer mean anything.
-      if (data.reset) {
-        seenUids.current.clear();
-        highestUidRef.current = 0;
-        lowestUidRef.current = 0;
-        inlineRequested.current.clear();
-        setInlineImages({});
-      }
-      if (data.uidValidity) uidValidityRef.current = data.uidValidity;
-      if (Number.isInteger(data.highestUid)) {
-        highestUidRef.current = Math.max(highestUidRef.current, data.highestUid);
-      }
-      // Only a first load (or a reset) says where the page stopped; later refreshes leave it alone.
-      if (typeof data.hasMore === 'boolean' && Number.isInteger(data.lowestUid)) {
-        lowestUidRef.current = data.lowestUid;
-        setHasMore(data.hasMore);
-      }
+      // The server hands over at most 50 messages at a time, oldest first, and says when there is more. Keep
+      // asking so a burst of mail is never skipped; the limit only guards against a server that never stops.
+      for (let round = 0; round < MAX_CATCH_UP_ROUNDS; round += 1) {
+        const res = await fetch('/api/emails', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: primaryEmail.email_address,
+            sinceUid: highestUidRef.current || undefined,
+            uidValidity: uidValidityRef.current || undefined,
+          }),
+          credentials: 'include',
+        });
+        if (res.status === 401 || res.status === 403) {
+          router.push('/');
+          return;
+        }
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Mailbox sync failed.');
+        }
+        if (data.warning) {
+          toast.warning(data.warning);
+        }
+        // The mailbox was rebuilt on the server, so the UIDs we remember no longer mean anything.
+        if (data.reset) {
+          seenUids.current.clear();
+          highestUidRef.current = 0;
+          lowestUidRef.current = 0;
+          inlineRequested.current.clear();
+          setInlineImages({});
+        }
+        if (data.uidValidity) uidValidityRef.current = data.uidValidity;
+        if (Number.isInteger(data.highestUid)) {
+          highestUidRef.current = Math.max(highestUidRef.current, data.highestUid);
+        }
+        // Only a first load (or a reset) says where the page stopped; later refreshes leave it alone.
+        if (typeof data.hasMore === 'boolean' && Number.isInteger(data.lowestUid)) {
+          lowestUidRef.current = data.lowestUid;
+          setHasMore(data.hasMore);
+        }
 
-      const newOnes = (data.emails || []).filter(m => {
-        if (seenUids.current.has(m.uid)) return false;
-        seenUids.current.add(m.uid);
-        return true;
-      });
-      if (data.reset) {
-        setInbox(newOnes);
-        setSelectedUid(null);
-      } else if (newOnes.length) {
-        setInbox(prev => [...newOnes, ...prev]);
+        const newOnes = (data.emails || []).filter(m => {
+          if (seenUids.current.has(m.uid)) return false;
+          seenUids.current.add(m.uid);
+          return true;
+        });
+        if (data.reset) {
+          setInbox(newOnes);
+          setSelectedUid(null);
+        } else if (newOnes.length) {
+          setInbox(prev => [...newOnes, ...prev]);
+        }
+        if (!data.more) break;
       }
     } catch (err) {
       console.error(err);
@@ -330,6 +339,13 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
   const setReadState = (uids, read) => {
     setInbox(prev => prev.map(m => (uids.includes(m.uid) ? { ...m, read } : m)));
     sendState(read ? 'read' : 'unread', uids);
+  };
+
+  const markAllRead = () => {
+    const unread = inbox.filter(message => !message.read).map(message => message.uid);
+    for (let index = 0; index < unread.length; index += 100) {
+      setReadState(unread.slice(index, index + 100), true);
+    }
   };
 
   const selectEmail = email => {
@@ -454,6 +470,12 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
   };
 
   const unreadCount = inbox.filter(message => !message.read).length;
+  // Narrows the messages already loaded in this page; it does not search the mailbox.
+  const needle = filter.trim().toLowerCase();
+  const visibleInbox = needle
+    ? inbox.filter(message => [message.subject, message.from, String(message.text || '').slice(0, 5000)]
+        .some(value => String(value || '').toLowerCase().includes(needle)))
+    : inbox;
   // Pictures the message body shows itself are not listed again as files to download.
   const listedAttachments = selectedEmail
     ? (selectedEmail.attachments || []).filter(item => inlineImagesToFetch(selectedEmail.html, [item]).length === 0)
@@ -520,6 +542,26 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                 </div>
               </div>
 
+              {inbox.length > 0 ? (
+                <div className="flex items-center gap-2 border-b px-4 py-3">
+                  <div className="relative min-w-0 flex-1">
+                    <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      type="search"
+                      value={filter}
+                      onChange={event => setFilter(event.target.value)}
+                      placeholder="Filter loaded messages"
+                      aria-label="Filter loaded messages"
+                      className="pl-8"
+                    />
+                  </div>
+                  <Button type="button" variant="outline" size="sm" onClick={markAllRead} disabled={unreadCount === 0}>
+                    <CheckCheck className="h-4 w-4" />
+                    Mark all read
+                  </Button>
+                </div>
+              ) : null}
+
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {inbox.length === 0 ? (
                   <div className="flex h-full flex-col items-center justify-center px-8 py-12 text-center">
@@ -531,9 +573,11 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                       New mail will arrive here automatically while this page stays open.
                     </p>
                   </div>
+                ) : visibleInbox.length === 0 ? (
+                  <p className="px-6 py-10 text-center text-sm text-muted-foreground">No loaded message matches that.</p>
                 ) : (
                   <div className="divide-y">
-                    {inbox.map(email => (
+                    {visibleInbox.map(email => (
                       <button
                         key={email.uid}
                         type="button"
@@ -680,7 +724,7 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                         <iframe
                           title={selectedEmail.subject || 'Email message'}
                           sandbox="allow-popups allow-popups-to-escape-sandbox"
-                          srcDoc={messageHtml}
+                          srcDoc={buildMessageDocument(messageHtml, { allowRemoteImages: imagesLoadedFor.has(selectedEmail.uid) })}
                           className="h-[70vh] min-h-[420px] w-full border-0 bg-background"
                         />
                       </>

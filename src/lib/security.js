@@ -18,26 +18,64 @@ function validIp(value) {
   return net.isIP(candidate) ? candidate : null
 }
 
-// Client IPs come from CF-Connecting-IP, X-Real-IP or the last X-Forwarded-For entry. Entries a client
-// sends itself come first in X-Forwarded-For and can be forged; the proxy in front of the app appends
-// the address it actually saw, so the last entry is the one to trust. Run the app behind a proxy that
-// sets one of these headers, or set TRUST_PROXY_HEADERS=false to always use the socket address.
+// Addresses a reverse proxy on the same machine or network connects from. A request that arrives from
+// anywhere else did not pass through a proxy of yours, so whatever forwarding headers it carries were typed
+// by the client.
+const PRIVATE_PEERS = new net.BlockList()
+PRIVATE_PEERS.addSubnet('127.0.0.0', 8, 'ipv4')
+PRIVATE_PEERS.addSubnet('10.0.0.0', 8, 'ipv4')
+PRIVATE_PEERS.addSubnet('172.16.0.0', 12, 'ipv4')
+PRIVATE_PEERS.addSubnet('192.168.0.0', 16, 'ipv4')
+PRIVATE_PEERS.addSubnet('169.254.0.0', 16, 'ipv4')
+PRIVATE_PEERS.addSubnet('100.64.0.0', 10, 'ipv4')
+PRIVATE_PEERS.addAddress('::1', 'ipv6')
+PRIVATE_PEERS.addSubnet('fc00::', 7, 'ipv6')
+PRIVATE_PEERS.addSubnet('fe80::', 10, 'ipv6')
+
+function isPrivatePeer(address) {
+  const candidate = String(address || '').replace(/^::ffff:/i, '')
+  const family = net.isIP(candidate)
+  if (!family) return false
+  return PRIVATE_PEERS.check(candidate, family === 6 ? 'ipv6' : 'ipv4')
+}
+
+// TRUST_PROXY_HEADERS: "false" never reads forwarding headers, "true" always does, and anything else (the
+// default) reads them only when the connection comes from a private address, i.e. a proxy beside the app.
+function proxyTrust() {
+  const setting = String(process.env.TRUST_PROXY_HEADERS ?? '').trim().toLowerCase()
+  if (['false', '0', 'no', 'off'].includes(setting)) return 'never'
+  if (['true', '1', 'yes', 'on'].includes(setting)) return 'always'
+  return 'auto'
+}
+
+const CLIENT_IP_HEADERS = new Set(['x-forwarded-for', 'x-real-ip', 'cf-connecting-ip'])
+
+// Exactly one header is read, never a list of them: with a list, a client can send the one the proxy does not
+// overwrite. X-Forwarded-For is the default because every proxy appends to it, so the entry counted from
+// the right is the address your own proxy saw. Entries to its left were sent by the client and can be forged.
+// Set CLIENT_IP_HEADER=cf-connecting-ip behind Cloudflare, and TRUSTED_PROXY_HOPS when more than one proxy
+// of yours appends to X-Forwarded-For.
+function forwardedAddress(req) {
+  const configured = String(process.env.CLIENT_IP_HEADER || '').trim().toLowerCase()
+  const header = CLIENT_IP_HEADERS.has(configured) ? configured : 'x-forwarded-for'
+  const value = String(firstHeaderValue(req.headers[header]) || '')
+
+  if (header !== 'x-forwarded-for') return validIp(value)
+
+  const hops = Math.max(1, Number.parseInt(process.env.TRUSTED_PROXY_HOPS ?? '', 10) || 1)
+  const entries = value.split(',').map(entry => entry.trim()).filter(Boolean)
+  if (entries.length === 0) return null
+  return validIp(entries[Math.max(0, entries.length - hops)])
+}
+
 export function getClientIp(req) {
-  if (process.env.TRUST_PROXY_HEADERS !== 'false') {
-    const cloudflareIp = validIp(firstHeaderValue(req.headers['cf-connecting-ip']))
-    if (cloudflareIp) return cloudflareIp
+  const socketAddress = req.socket?.remoteAddress || 'unknown'
+  const trust = proxyTrust()
 
-    const realIp = validIp(firstHeaderValue(req.headers['x-real-ip']))
-    if (realIp) return realIp
+  if (trust === 'never') return socketAddress
+  if (trust === 'auto' && !isPrivatePeer(socketAddress)) return socketAddress
 
-    const forwarded = String(firstHeaderValue(req.headers['x-forwarded-for']) || '')
-      .split(',')
-      .map(validIp)
-      .filter(Boolean)
-    if (forwarded.length > 0) return forwarded[forwarded.length - 1]
-  }
-
-  return req.socket?.remoteAddress || 'unknown'
+  return forwardedAddress(req) || socketAddress
 }
 
 // One person can rotate through a whole IPv6 /64, so those addresses share a rate-limit bucket.

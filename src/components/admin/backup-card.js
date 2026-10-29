@@ -8,6 +8,7 @@ import { Label } from '../ui/label'
 
 export function BackupCard({ adminPath }) {
   const [password, setPassword] = useState('')
+  const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
 
   const download = async event => {
@@ -17,7 +18,7 @@ export function BackupCard({ adminPath }) {
       const res = await fetch(`/api/${adminPath}/backup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password, code }),
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
@@ -36,6 +37,7 @@ export function BackupCard({ adminPath }) {
       setTimeout(() => URL.revokeObjectURL(url), 10_000)
 
       setPassword('')
+      setCode('')
       toast.success('Backup downloaded. Keep it somewhere private.')
     } catch {
       toast.error('The backup could not be created. Please try again.')
@@ -66,6 +68,17 @@ export function BackupCard({ adminPath }) {
               onChange={event => setPassword(event.target.value)}
               autoComplete="current-password"
               required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="backup-code">Authenticator code</Label>
+            <Input
+              id="backup-code"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="Only if two-factor is on"
+              value={code}
+              onChange={event => setCode(event.target.value)}
             />
           </div>
           <Button type="submit" disabled={busy}>
