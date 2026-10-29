@@ -810,12 +810,50 @@ prompt_common_settings() {
   SETUP_TOKEN="$(openssl rand -hex 16)"
   echo "Setup token generated."
 
-  read -p "Port to expose the app on (default 3000): " HOST_PORT
-  HOST_PORT="${HOST_PORT:-3000}"
+  prompt_port
+}
+
+# Asks until it gets a port number; an empty answer (or no more input) means 3000. The value ends up in
+# the env files and the systemd unit, so it must be nothing but digits.
+prompt_port() {
+  local answer
+
+  while true; do
+    if ! read -r -p "Port to expose the app on (default 3000): " answer; then
+      answer=""
+    fi
+    answer="${answer:-3000}"
+
+    if [[ "$answer" =~ ^[0-9]+$ ]] && [ "$answer" -ge 1 ] && [ "$answer" -le 65535 ]; then
+      HOST_PORT="$answer"
+      return 0
+    fi
+
+    echo "'${answer}' is not a valid port. Enter a number from 1 to 65535."
+  done
+}
+
+# The env files hold the session secret, the data-encryption key and the setup token. Create them
+# private first so the secrets are never briefly readable by other users on the machine.
+create_private_file() {
+  : > "$1"
+  chmod 600 "$1"
+}
+
+secure_env_files() {
+  local file
+
+  for file in "${INSTALL_DIR}/${APP_ENV_FILE}" "${INSTALL_DIR}/${COMPOSE_ENV_FILE}"; do
+    if [ -f "$file" ]; then
+      chmod 600 "$file"
+    fi
+  done
 }
 
 write_direct_env_file() {
   step "Writing direct deployment environment file..."
+
+  create_private_file "${INSTALL_DIR}/${APP_ENV_FILE}"
 
   cat > "${INSTALL_DIR}/${APP_ENV_FILE}" <<EOF
 # Email Node Environment Configuration
@@ -842,6 +880,9 @@ EOF
 
 write_docker_env_files() {
   step "Writing Docker deployment environment files..."
+
+  create_private_file "${INSTALL_DIR}/${APP_ENV_FILE}"
+  create_private_file "${INSTALL_DIR}/${COMPOSE_ENV_FILE}"
 
   cat > "${INSTALL_DIR}/${APP_ENV_FILE}" <<EOF
 # Email Node Environment Configuration
@@ -877,6 +918,9 @@ EOF
 ensure_app_env_defaults() {
   local env_file="${INSTALL_DIR}/${APP_ENV_FILE}"
 
+  # Installs from before the env files were created private are fixed on their next update.
+  secure_env_files
+
   ensure_env_value "SESSION_PASSWORD" "$(openssl rand -base64 32)" "$env_file"
   # Without DATA_ENCRYPTION_KEY the app derives the encryption key from SESSION_PASSWORD. Reuse that
   # value so secrets that are already stored encrypted stay readable; a fresh random key would lock
@@ -895,6 +939,7 @@ ensure_app_env_defaults() {
 restore_data_dir_owner() {
   if [ -d "${INSTALL_DIR}/data" ]; then
     as_root chown -R "${RUN_USER}:${RUN_GROUP}" "${INSTALL_DIR}/data"
+    as_root chmod 700 "${INSTALL_DIR}/data"
   fi
 }
 
@@ -1102,6 +1147,7 @@ install_docker_mode() {
 
   step "Creating data directory..."
   mkdir -p "${INSTALL_DIR}/data"
+  chmod 700 "${INSTALL_DIR}/data"
 
   pull_or_build_docker_image
 

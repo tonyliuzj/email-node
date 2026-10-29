@@ -7,6 +7,9 @@ import { protectMutation } from '../../lib/security.js'
 import { sanitizeEmailHtml } from '../../lib/email-sanitizer.js'
 import { isAddressedTo } from '../../lib/recipients.js'
 import { hasBlockedRemoteImages } from '../../lib/remote-images.js'
+import { imapLimiter } from '../../lib/imap-limit.js'
+import { arrivedAfterRegistration } from '../../lib/mail-window.js'
+import { limitMessageBody } from '../../lib/message-limits.js'
 import { normalizeEmailAddress } from '../../lib/validation.js'
 
 const MAX_MESSAGES = 50
@@ -83,6 +86,11 @@ async function handler(req, res) {
     return res.status(500).json({ error: 'Domain configuration not found' })
   }
 
+  // The inbox page sends the highest UID it already has, so a refresh fetches and parses only new mail
+  // instead of the whole last 50 every few seconds.
+  const requestedSince = Number.parseInt(req.body?.sinceUid, 10)
+  const knownValidity = req.body?.uidValidity === undefined ? '' : String(req.body.uidValidity)
+
   const client = new ImapFlow({
     host: domain.imap_host,
     port: Number(domain.imap_port || 993),
@@ -108,6 +116,14 @@ async function handler(req, res) {
     }
   }
 
+  // Taken right before the try so that every way out of it, including errors, gives the slot back.
+  let releaseSlot
+  try {
+    releaseSlot = await imapLimiter.acquire()
+  } catch {
+    return res.status(503).json({ error: 'The mailbox is busy right now. Please try again in a moment.' })
+  }
+
   try {
     await withTimeout(
       client.connect(),
@@ -122,7 +138,14 @@ async function handler(req, res) {
       closeClient
     )
 
+    // UIDs only mean something within one UIDVALIDITY. If the mailbox was rebuilt, start from scratch.
+    const uidValidity = String(client.mailbox?.uidValidity ?? '')
+    const sinceTrusted = Number.isInteger(requestedSince) && requestedSince > 0 && knownValidity === uidValidity
+    const sinceUid = sinceTrusted ? requestedSince : 0
+    const reset = Number.isInteger(requestedSince) && requestedSince > 0 && !sinceTrusted
+
     let rawMessages = []
+    let highestUid = 0
     try {
       const uids = await withTimeout(
         client.search(recipientQuery(requestedAddress), { uid: true }),
@@ -131,19 +154,35 @@ async function handler(req, res) {
         closeClient
       )
 
-      const limitedUids = Array.isArray(uids) ? uids.slice(-MAX_MESSAGES) : []
-      await withTimeout((async () => {
-        for await (const message of client.fetch(
-          limitedUids,
-          { uid: true, source: { maxLength: MAX_EMAIL_BYTES } },
-          { uid: true }
-        )) {
-          rawMessages.push({
-            uid: message.uid,
-            buffer: message.source,
-          })
-        }
-      })(), MAILBOX_OPERATION_TIMEOUT_MS, 'Timed out fetching mailbox messages.', closeClient)
+      // UIDs ascend with arrival, so the newest 50 candidates are the last 50.
+      const candidateUids = Array.isArray(uids) ? uids.filter(uid => uid > sinceUid).slice(-MAX_MESSAGES) : []
+      highestUid = candidateUids.length > 0 ? candidateUids[candidateUids.length - 1] : 0
+
+      // Arrival dates first (small), so the bodies of mail that is not this owner's are never downloaded.
+      const ownUids = []
+      if (candidateUids.length > 0) {
+        await withTimeout((async () => {
+          for await (const message of client.fetch(candidateUids, { uid: true, internalDate: true }, { uid: true })) {
+            // Only mail that arrived while this address was registered is its owner's (see mail-window.js).
+            if (arrivedAfterRegistration(message.internalDate, userEmail.created_at)) ownUids.push(message.uid)
+          }
+        })(), MAILBOX_OPERATION_TIMEOUT_MS, 'Timed out reading message dates.', closeClient)
+      }
+
+      if (ownUids.length > 0) {
+        await withTimeout((async () => {
+          for await (const message of client.fetch(
+            ownUids,
+            { uid: true, source: { maxLength: MAX_EMAIL_BYTES } },
+            { uid: true }
+          )) {
+            rawMessages.push({
+              uid: message.uid,
+              buffer: message.source,
+            })
+          }
+        })(), MAILBOX_OPERATION_TIMEOUT_MS, 'Timed out fetching mailbox messages.', closeClient)
+      }
 
       if (imapErrors.length > 0) {
         throw imapErrors[0]
@@ -153,35 +192,37 @@ async function handler(req, res) {
     }
 
     if (rawMessages.length === 0) {
-      return res.status(200).json({ emails: [] })
+      return res.status(200).json({ emails: [], uidValidity, reset, highestUid })
     }
 
-    const emails = await Promise.all(
-      rawMessages.map(async ({ uid, buffer }) => {
-        try {
-          const parsed = await simpleParser(buffer)
-          if (!isAddressedTo(parsed, requestedAddress)) return null
-          const html = parsed.html ? sanitizeEmailHtml(parsed.html) : null
-          return {
-            uid,
-            subject: parsed.subject,
-            from: formatAddressList(parsed.from),
-            date: parsed.date,
-            text: parsed.text,
-            html,
-            hasRemoteImages: hasBlockedRemoteImages(html),
-          }
-        } catch (error) {
-          console.error(`Failed to parse email UID ${uid}:`, error)
-          return null
-        }
-      })
-    )
+    // One at a time: parsing up to 50 messages of 1 MB together is a memory spike anyone can provoke.
+    const emails = []
+    for (const { uid, buffer } of rawMessages) {
+      try {
+        const parsed = await simpleParser(buffer)
+        if (!isAddressedTo(parsed, requestedAddress)) continue
 
-    const validEmails = emails.filter(Boolean)
+        const sanitized = parsed.html ? sanitizeEmailHtml(parsed.html) : null
+        const { text, html, truncated } = limitMessageBody({ text: parsed.text, html: sanitized })
+        emails.push({
+          uid,
+          subject: parsed.subject,
+          from: formatAddressList(parsed.from),
+          date: parsed.date,
+          text,
+          html,
+          hasRemoteImages: hasBlockedRemoteImages(html),
+          truncated,
+        })
+      } catch (error) {
+        console.error(`Failed to parse email UID ${uid}:`, error)
+      }
+    }
+
+    const validEmails = emails
     validEmails.sort((a, b) => (b.date ? +new Date(b.date) : 0) - (a.date ? +new Date(a.date) : 0))
     
-    res.status(200).json({ emails: validEmails })
+    res.status(200).json({ emails: validEmails, uidValidity, reset, highestUid })
   } catch (error) {
     if (isTimeoutError(error)) {
       console.warn('IMAP sync timed out:', {
@@ -198,8 +239,12 @@ async function handler(req, res) {
     console.error('IMAP processing failed:', error)
     res.status(500).json({ error: 'Failed to fetch mailbox messages.' })
   } finally {
-    if (!client.closed) {
-      await client.logout().catch(() => closeClient())
+    try {
+      if (!client.closed) {
+        await client.logout().catch(() => closeClient())
+      }
+    } finally {
+      releaseSlot()
     }
   }
 }

@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs'
 import path from 'path'
 import fs from 'fs'
 import { decryptSecret, encryptSecret, isEncryptedSecret } from './secret-store.js'
+import { ensureColumn } from './schema-migrations.js'
 import {
   normalizeDomainName,
   normalizeEmailAddress,
@@ -114,25 +115,20 @@ db.prepare('UPDATE admin SET username = TRIM(username) WHERE username != TRIM(us
 
 const TIMING_HASH = bcrypt.hashSync('timing-placeholder', 10)
 
-// Table and column names here are constants, never user input.
-function ensureColumn(table, column, definition) {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all()
-  if (columns.some(existing => existing.name === column)) return false
-  db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run()
-  return true
-}
-
 // Existing addresses start their inactivity clock at the upgrade, so switching retention on later
-// cannot instantly delete everything that was created long ago.
-if (ensureColumn('emails', 'last_active_at', 'DATETIME')) {
-  db.prepare("UPDATE emails SET last_active_at = datetime('now')").run()
-}
-ensureColumn('admin', 'totp_secret', 'TEXT')
-ensureColumn('admin', 'totp_enabled', 'INTEGER DEFAULT 0')
-ensureColumn('admin', 'totp_last_step', 'INTEGER DEFAULT 0')
-ensureColumn('admin', 'recovery_codes', 'TEXT')
+// cannot instantly delete everything that was created long ago. The back-fill is part of the same
+// transaction as adding the column (see schema-migrations.js), so nothing can see it half done.
+ensureColumn(db, 'emails', 'last_active_at', 'DATETIME', {
+  backfill: "UPDATE emails SET last_active_at = datetime('now')",
+})
+ensureColumn(db, 'admin', 'totp_secret', 'TEXT')
+ensureColumn(db, 'admin', 'totp_enabled', 'INTEGER DEFAULT 0')
+ensureColumn(db, 'admin', 'totp_last_step', 'INTEGER DEFAULT 0')
+ensureColumn(db, 'admin', 'recovery_codes', 'TEXT')
 
 const PURGE_INTERVAL_MS = 60 * 60 * 1000
+const MAX_BLOCKED_PREFIXES = 500
+const MAX_ADDRESS_PAGE = 1_000_000
 let lastPurgeAt = 0
 
 export function isSetupRequired() {
@@ -247,8 +243,8 @@ export function getInboxRefreshSeconds() {
 
 export function setInboxRefreshSeconds(value) {
   const seconds = Number.parseInt(value, 10)
-  if (!Number.isInteger(seconds) || seconds < 5) {
-    return { success: false, error: 'Refresh time must be at least 5 seconds.' }
+  if (!Number.isInteger(seconds) || seconds < 5 || seconds > 3600) {
+    return { success: false, error: 'Refresh time must be between 5 and 3600 seconds.' }
   }
 
   setSetting('inbox_refresh_seconds', String(seconds))
@@ -288,7 +284,7 @@ export function getBlockedEmailPrefixes() {
 }
 
 export function setBlockedEmailPrefixes(value) {
-  const prefixes = normalizeBlockedEmailPrefixes(value)
+  const prefixes = normalizeBlockedEmailPrefixes(value).slice(0, MAX_BLOCKED_PREFIXES)
   setSetting('blocked_email_prefixes', JSON.stringify(prefixes))
   return { success: true, value: prefixes }
 }
@@ -512,7 +508,7 @@ export function purgeInactiveAddresses({ force = false } = {}) {
 
 export function listAddresses({ search = '', page = 1, pageSize = 25 } = {}) {
   const size = Math.min(Math.max(Number.parseInt(pageSize, 10) || 25, 1), 100)
-  const requestedPage = Math.max(Number.parseInt(page, 10) || 1, 1)
+  const requestedPage = Math.min(Math.max(Number.parseInt(page, 10) || 1, 1), MAX_ADDRESS_PAGE)
   const term = String(search || '').trim().toLowerCase().slice(0, 200)
   const where = term ? "WHERE email_address LIKE ? ESCAPE '\\'" : ''
   const params = term ? [`%${term.replace(/[\\%_]/g, '\\$&')}%`] : []

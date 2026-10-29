@@ -17,6 +17,8 @@ export default withSessionRoute(async (req, res) => {
     return
   }
 
-  req.session.destroy()
+  // Only the admin part: a visitor signed in on the same browser stays signed in.
+  delete req.session.admin
+  await req.session.save()
   return res.status(200).json({ ok: true })
 })

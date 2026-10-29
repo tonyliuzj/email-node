@@ -104,6 +104,9 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
   const [countdown, setCountdown] = useState(refreshSeconds);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const seenUids = useRef(new Set());
+  // What the server has already looked at, so each refresh only asks for newer mail.
+  const highestUidRef = useRef(0);
+  const uidValidityRef = useRef('');
   const isFetchingRef = useRef(false);
   const [userEmails, setUserEmails] = useState([])
   const [loading, setLoading] = useState(true)
@@ -148,7 +151,11 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
       const res = await fetch('/api/emails', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: primaryEmail.email_address }),
+        body: JSON.stringify({
+          email: primaryEmail.email_address,
+          sinceUid: highestUidRef.current || undefined,
+          uidValidity: uidValidityRef.current || undefined,
+        }),
         credentials: 'include',
       });
       if (res.status === 401 || res.status === 403) {
@@ -162,13 +169,27 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
       if (data.warning) {
         toast.warning(data.warning);
       }
-      const { emails } = data;
-      const newOnes = emails?.filter(m => {
+      // The mailbox was rebuilt on the server, so the UIDs we remember no longer mean anything.
+      if (data.reset) {
+        seenUids.current.clear();
+        highestUidRef.current = 0;
+      }
+      if (data.uidValidity) uidValidityRef.current = data.uidValidity;
+      if (Number.isInteger(data.highestUid)) {
+        highestUidRef.current = Math.max(highestUidRef.current, data.highestUid);
+      }
+
+      const newOnes = (data.emails || []).filter(m => {
         if (seenUids.current.has(m.uid)) return false;
         seenUids.current.add(m.uid);
         return true;
-      }) || [];
-      if (newOnes.length) setInbox(prev => [...newOnes, ...prev]);
+      });
+      if (data.reset) {
+        setInbox(newOnes);
+        setSelectedEmail(null);
+      } else if (newOnes.length) {
+        setInbox(prev => [...newOnes, ...prev]);
+      }
     } catch (err) {
       console.error(err);
       toast.error(err.message || 'Mailbox sync failed.', { id: 'mailbox-sync-error' });
@@ -419,6 +440,11 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                             </Button>
                           </div>
                         ) : null}
+                        {selectedEmail.truncated ? (
+                          <p className="mb-4 text-xs text-muted-foreground">
+                            This message is very large, so only part of it is shown.
+                          </p>
+                        ) : null}
                         <iframe
                           title={selectedEmail.subject || 'Email message'}
                           sandbox="allow-popups allow-popups-to-escape-sandbox"
@@ -428,6 +454,11 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                       </>
                     ) : (
                       <div className="whitespace-pre-wrap text-sm leading-6">
+                        {selectedEmail.truncated ? (
+                          <p className="mb-4 text-xs text-muted-foreground">
+                            This message is very large, so only part of it is shown.
+                          </p>
+                        ) : null}
                         {selectedEmail.text}
                       </div>
                     )}

@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
+  // The app has no images to optimise, so don't expose the optimiser endpoint (and its sharp/libvips
+  // attack surface) at all.
+  images: { unoptimized: true },
   async headers() {
     const isProduction = process.env.NODE_ENV === "production";
 
@@ -27,6 +30,11 @@ const nextConfig: NextConfig = {
     ].join("; ");
 
     return [
+      {
+        // Mailbox contents, account details and settings must never be kept by a browser or proxy cache.
+        source: "/api/(.*)",
+        headers: [{ key: "Cache-Control", value: "no-store, max-age=0" }],
+      },
       {
         source: "/(.*)",
         headers: [

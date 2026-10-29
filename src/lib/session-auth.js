@@ -91,6 +91,7 @@ export async function getSessionEmail(req) {
     email_id: email.id,
     email_address: email.email_address,
     domain_name: email.domain_name,
+    created_at: email.created_at,
   }
 }
 

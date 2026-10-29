@@ -19,8 +19,11 @@ fi
 # unprivileged user the app runs as, so hand it over before dropping privileges.
 if [ "$(id -u)" = "0" ]; then
   chown -R nextjs:nodejs /app/data
+  # The database holds password hashes and encrypted IMAP credentials; nobody else needs to read it.
+  chmod 700 /app/data
   if [ -n "$db_dir" ] && [ "$db_dir" != "." ] && [ "$db_dir" != "/app/data" ]; then
     chown -R nextjs:nodejs "$db_dir"
+    chmod 700 "$db_dir"
   fi
 
   exec gosu nextjs "$@"

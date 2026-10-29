@@ -174,9 +174,26 @@ Access the admin panel at `/admin` (or your custom admin path):
 
 **Inactivity limit.** An address counts as used when its owner signs in or opens the inbox; mail arriving for it does not count. With a limit set (for example 90 days), unused addresses are removed the next time someone uses the site, checked at most once an hour. The page tells you how many would go before you save. Existing addresses start counting from the day you upgrade, so switching this on never deletes old addresses straight away.
 
-**Two-factor authentication.** Under **Two-factor authentication**, confirm your password, add the shown key to an authenticator app (Google Authenticator, Authy, 1Password, Bitwarden: choose "enter a setup key"), then type the 6-digit code it shows. You are given eight recovery codes, each usable once, so keep them somewhere safe. Turning it on or off signs out every other device. If you lose both the app and the codes, delete the secret directly: `sqlite3 data/temp-mail.db "UPDATE admin SET totp_enabled=0, totp_secret=NULL, recovery_codes=NULL"`.
+**Two-factor authentication.** Under **Two-factor authentication**, confirm your password, add the shown key to an authenticator app (Google Authenticator, Authy, 1Password, Bitwarden: choose "enter a setup key"), then type the 6-digit code it shows. You are given eight recovery codes, each usable once, so keep them somewhere safe. Turning it on or off signs out every other device. If you lose both the app and the codes, see [Recovering admin access](#recovering-admin-access).
 
 Because failed logins are counted per account, someone who knows your admin username can lock you out for about 15 minutes by guessing wrongly eight times. Pick a username that isn't obvious.
+
+### Recovering admin access
+
+There is no "forgot password" email, so recovery happens on the server, next to the database. It works if you forgot the password, lost your authenticator and recovery codes, or both:
+
+```bash
+# set a new admin password (typed at a prompt, not shown)
+node scripts/reset-admin.cjs --password
+
+# turn two-factor off
+node scripts/reset-admin.cjs --disable-2fa
+
+# Docker
+docker compose exec -u nextjs email-node node scripts/reset-admin.cjs --password
+```
+
+Both actions sign every other admin session out. If the account was locked by failed logins, restart the app, because that lock is held in memory. Add `--username NAME` if there is more than one admin. The script uses `DATABASE_URL`, or `data/temp-mail.db` in the folder you run it from.
 
 ### Domain Configuration
 
@@ -240,6 +257,10 @@ src/
 │   ├── admin-auth.js               # Admin sign-in: password, lockout, second factor
 │   ├── totp.js                     # Authenticator-app codes and recovery codes
 │   ├── remote-images.js            # Blocks/restores remote images in messages
+│   ├── mail-window.js              # Which messages arrived while an address was registered
+│   ├── imap-limit.js               # Caps simultaneous connections to the mail server
+│   ├── message-limits.js           # Size caps for message bodies sent to the browser
+│   ├── schema-migrations.js        # Race-safe column migrations
 │   ├── validation.js               # Input normalisation
 │   ├── email-sanitizer.js          # HTML sanitising for message bodies
 │   ├── secret-store.js             # Encryption for stored secrets
@@ -256,6 +277,8 @@ data/
 Dockerfile                          # Production container image
 docker-compose.yml                  # Docker Compose deployment
 email-node.sh                       # Interactive direct/Docker installer
+scripts/
+└── reset-admin.cjs                 # Reset the admin password / turn off two-factor from the server
 tests/                              # Automated tests (npm test)
 ```
 
@@ -356,11 +379,24 @@ Most configuration is done through the admin panel. Environment variables:
 - `SETUP_TOKEN` - Required on the first-run setup page when set. The installer generates one. It has no effect once an admin exists.
 - `SESSION_COOKIE_SECURE` - Session cookies are `Secure` in production, so browsers only keep them over HTTPS (or on `localhost`). Set this to `false` only if you open the app over plain `http://` with a server address; HTTPS is strongly preferred.
 - `TRUST_PROXY_HEADERS` - Client IPs (used for rate limiting) are read from `CF-Connecting-IP`, `X-Real-IP` or the last `X-Forwarded-For` entry. Set this to `false` if the app is reachable directly, without a proxy that sets one of them, so a client cannot forge its address.
+- `MAIL_CLOCK_SKEW_SECONDS` - How far before an address was registered a message may be stamped and still be shown to it. Default `120`. See [Who can read which mail](#who-can-read-which-mail).
+- `IMAP_MAX_CONNECTIONS` - Most inbox refreshes allowed to talk to the mail server at once. Default `8`. Extra refreshes wait a few seconds, then are told the mailbox is busy.
 - `HOST_PORT` - Host port used by Docker Compose.
 - `CONTAINER_PORT` - Container port used by Docker Compose.
 - `DOCKER_IMAGE` - Docker image used by Docker Compose and the installer.
 
 ---
+
+### Who can read which mail
+
+All addresses on a domain share one catch-all mailbox, so being in that mailbox does not make a message yours. A message is shown to an address only if both of these hold:
+
+1. **It was sent to exactly that address** (To, Cc or the delivery headers). A search for `a@example.com` never returns mail for `ba@example.com`.
+2. **It arrived after the address was registered.** Without this, deleting or expiring an address would hand the previous owner's mail (password resets, receipts) to whoever registers the same name next, and anyone could register a name just to read what was already sent to it.
+
+The second rule uses the time the mail server received the message (not the `Date` header, which the sender controls), and allows `MAIL_CLOCK_SKEW_SECONDS` of difference between the two servers' clocks. The trade-off: mail that arrived in the two minutes before a name was re-registered is still shown to the new owner. Lower the setting if your servers keep good time; raise it if the first email after sign-up ever fails to appear and the mail server's clock runs behind.
+
+Messages stay in your mailbox after an address is deleted or expires. Clean them up with your mail server's own retention rules.
 
 ## Security Features
 
@@ -372,6 +408,10 @@ Most configuration is done through the admin panel. Environment variables:
 - **Same-origin checks and rate limits** on mutating API routes. Limits are keyed on a client IP that a visitor cannot forge through `X-Forwarded-For`, and IPv6 clients share a limit per /64.
 - **Exact inbox isolation**: IMAP header search matches substrings, so every message is checked against its real recipients before it is shown. `a@example.com` never sees mail for `ba@example.com`.
 - **Sessions are checked against the database** on every request. Regenerating a passkey, changing the admin password or username, or deleting an address signs out all other sessions.
+- **Private by default**: the installer creates the env files (which hold the session secret, encryption key and setup token) readable only by their owner, tightens existing ones on update, and keeps the data folder private to the app user.
+- **Bounded mailbox load**: each refresh only fetches mail newer than what the page already has, message bodies are size-capped, messages are parsed one at a time, and the number of simultaneous connections to your mail server is limited.
+- **No cached API responses**: every `/api` response is sent with `Cache-Control: no-store`.
+- **Signing out only signs you out**: visitors and the admin share one session cookie, but signing out as one no longer signs out the other.
 - **Constant-time logins**: an unknown address or admin username takes as long to reject as a wrong password.
 - **Setup protection** with an optional `SETUP_TOKEN`, so a freshly deployed server cannot be claimed by whoever finds it first.
 - **Two-factor login** for the admin (RFC 6238 codes that cannot be replayed, hashed single-use recovery codes) and per-account lockout after repeated failures.
