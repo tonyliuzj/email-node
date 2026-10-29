@@ -870,13 +870,25 @@ ensure_app_env_defaults() {
   local env_file="${INSTALL_DIR}/${APP_ENV_FILE}"
 
   ensure_env_value "SESSION_PASSWORD" "$(openssl rand -base64 32)" "$env_file"
-  ensure_env_value "DATA_ENCRYPTION_KEY" "$(openssl rand -base64 32)" "$env_file"
+  # Without DATA_ENCRYPTION_KEY the app derives the encryption key from SESSION_PASSWORD. Reuse that
+  # value so secrets that are already stored encrypted stay readable; a fresh random key would lock
+  # them out.
+  ensure_env_value "DATA_ENCRYPTION_KEY" "$(read_env_value "SESSION_PASSWORD" "$env_file")" "$env_file"
   ensure_env_value "AUTH_TRUST_HOST" "true" "$env_file"
 }
 
 # ============================================================
 # systemd functions
 # ============================================================
+
+# The Docker image runs the app as its own unprivileged user (uid 1001) and takes ownership of data/.
+# The systemd service runs as RUN_USER, and the build step may have created the database as root when
+# the installer was started with sudo, so give data/ back to RUN_USER before the service starts.
+restore_data_dir_owner() {
+  if [ -d "${INSTALL_DIR}/data" ]; then
+    as_root chown -R "${RUN_USER}:${RUN_GROUP}" "${INSTALL_DIR}/data"
+  fi
+}
 
 write_service_file() {
   local app_port="$1"
@@ -950,6 +962,7 @@ install_direct() {
   step "Building the app..."
   npm run build
 
+  restore_data_dir_owner
   write_service_file "$HOST_PORT"
   reload_and_restart_service
 
@@ -982,6 +995,7 @@ update_direct() {
   APP_PORT="$(read_env_value "PORT" "${INSTALL_DIR}/${APP_ENV_FILE}")"
   APP_PORT="${APP_PORT:-3000}"
 
+  restore_data_dir_owner
   write_service_file "$APP_PORT"
   reload_and_restart_service
 
@@ -1038,7 +1052,7 @@ uninstall_direct() {
 
   if [ -d "$INSTALL_DIR" ]; then
     step "Removing installation directory..."
-    rm -rf "$INSTALL_DIR"
+    as_root rm -rf "$INSTALL_DIR"
     echo "Removed $INSTALL_DIR"
   fi
 
@@ -1154,7 +1168,7 @@ uninstall_docker_mode() {
     fi
 
     step "Removing installation directory..."
-    rm -rf "$INSTALL_DIR"
+    as_root rm -rf "$INSTALL_DIR"
 
     echo "Removed $INSTALL_DIR"
   fi

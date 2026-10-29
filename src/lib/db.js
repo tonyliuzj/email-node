@@ -33,7 +33,7 @@ export const DEFAULT_BLOCKED_EMAIL_PREFIXES = [
   'webmaster',
 ]
 
-const dbPath = path.join(process.cwd(), 'data', 'temp-mail.db')
+const dbPath = path.resolve(process.cwd(), process.env.DATABASE_URL || path.join('data', 'temp-mail.db'))
 fs.mkdirSync(path.dirname(dbPath), { recursive: true })
 const db = new Database(dbPath)
 

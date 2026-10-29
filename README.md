@@ -105,7 +105,7 @@ docker compose up -d
 4. **Open your browser**
    Navigate to [http://localhost:3000/setup](http://localhost:3000/setup) and create the first admin user.
 
-The Compose file uses the published image `tonyliuzj/email-node:latest` by default and mounts `./data` to `/app/data` so the SQLite database survives container updates. The file is named `docker-compose.yml`; only the command syntax is Compose v2.
+The Compose file uses the published image `tonyliuzj/email-node:latest` by default and mounts `./data` to `/app/data` so the SQLite database survives container updates. The container's start-up script takes ownership of that folder for the unprivileged user the app runs as, so it works even when Docker creates `./data` as root. The file is named `docker-compose.yml`; only the command syntax is Compose v2.
 
 #### Manual Installation
 
@@ -298,18 +298,25 @@ When using the installer, Docker mode pulls the published image first and builds
 
 ### Publishing Docker Images
 
-Maintainers can build and publish the image to Docker Hub with:
+GitHub Actions publishes the image for `linux/amd64` and `linux/arm64` to Docker Hub after every push to `main`, once lint and type checking pass. Each build is tagged `tonyliuzj/email-node:latest` and `tonyliuzj/email-node:<commit-sha>`. The workflow can also be run by hand from the **Actions** tab, and only publishes when run on `main`.
+
+It needs two repository secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token with write access to `tonyliuzj/email-node`).
+
+To publish manually instead:
 
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 -t tonyliuzj/email-node:latest --push .
 ```
+
+Pull requests and pushes to other branches run lint, type checking and a production build.
 
 ### Environment Variables
 
 Most configuration is done through the admin panel. Environment variables:
 
 - `SESSION_PASSWORD` - Secret used for encrypted sessions.
-- `DATA_ENCRYPTION_KEY` - Secret used to encrypt stored IMAP and Turnstile secrets. If omitted, the app falls back to `SESSION_PASSWORD`.
+- `DATA_ENCRYPTION_KEY` - Secret used to encrypt stored IMAP and Turnstile secrets. If omitted, the app falls back to `SESSION_PASSWORD`. Keep it unchanged once secrets are stored: a different key cannot decrypt them. When the installer adds a missing key during an update, it copies the current `SESSION_PASSWORD` so existing secrets keep working.
+- `DATABASE_URL` - SQLite file path, absolute or relative to the working directory. Defaults to `data/temp-mail.db` (`/app/data/temp-mail.db` in Docker).
 - `PORT` - Port used by the Next.js server.
 - `HOST_PORT` - Host port used by Docker Compose.
 - `CONTAINER_PORT` - Container port used by Docker Compose.
