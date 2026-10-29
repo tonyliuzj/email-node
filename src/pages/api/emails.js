@@ -6,6 +6,7 @@ import { getSessionEmail } from '../../lib/session-auth.js'
 import { protectMutation } from '../../lib/security.js'
 import { sanitizeEmailHtml } from '../../lib/email-sanitizer.js'
 import { isAddressedTo } from '../../lib/recipients.js'
+import { hasBlockedRemoteImages } from '../../lib/remote-images.js'
 import { normalizeEmailAddress } from '../../lib/validation.js'
 
 const MAX_MESSAGES = 50
@@ -160,13 +161,15 @@ async function handler(req, res) {
         try {
           const parsed = await simpleParser(buffer)
           if (!isAddressedTo(parsed, requestedAddress)) return null
+          const html = parsed.html ? sanitizeEmailHtml(parsed.html) : null
           return {
             uid,
             subject: parsed.subject,
             from: formatAddressList(parsed.from),
             date: parsed.date,
             text: parsed.text,
-            html: parsed.html ? sanitizeEmailHtml(parsed.html) : null,
+            html,
+            hasRemoteImages: hasBlockedRemoteImages(html),
           }
         } catch (error) {
           console.error(`Failed to parse email UID ${uid}:`, error)

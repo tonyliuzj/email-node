@@ -1,6 +1,6 @@
-import bcrypt from 'bcryptjs'
 import { withSessionRoute } from '../../../lib/session'
 import { getAdmin, getAdminPath, updateAdminPassword } from '../../../lib/db'
+import { confirmAdminPassword } from '../../../lib/admin-auth'
 import { requireAdmin, startAdminSession } from '../../../lib/session-auth'
 import { protectMutation } from '../../../lib/security'
 
@@ -27,8 +27,11 @@ export default withSessionRoute(async (req, res) => {
     return res.status(400).json({ error: 'Current password and new password are required' })
   }
 
-  const adminRecord = getAdmin(admin.username)
-  if (!adminRecord || !bcrypt.compareSync(currentPassword, adminRecord.password_hash)) {
+  const check = confirmAdminPassword(admin.username, currentPassword)
+  if (check === 'locked') {
+    return res.status(429).json({ error: 'Too many failed attempts. Try again in a few minutes.' })
+  }
+  if (check !== 'ok') {
     return res.status(401).json({ error: 'Current password is incorrect' })
   }
 

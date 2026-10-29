@@ -44,3 +44,42 @@ test('sanitizer forces links to open safely', () => {
   assert.match(clean, /rel="noopener noreferrer"/)
   assert.match(clean, /target="_blank"/)
 })
+
+test('remote images are parked so nothing loads until the reader asks', async () => {
+  const { hasBlockedRemoteImages, restoreRemoteImages } = await import('../src/lib/remote-images.js')
+  const clean = sanitizeEmailHtml('<p>Hi</p><img src="https://tracker.test/pixel.gif?id=42" alt="logo" width="1">')
+
+  assert.doesNotMatch(clean, /\ssrc=/i, 'no src means the browser requests nothing')
+  assert.match(clean, /data-remote-src="https:\/\/tracker\.test\/pixel\.gif\?id=42"/)
+  assert.equal(hasBlockedRemoteImages(clean), true)
+
+  const restored = restoreRemoteImages(clean)
+  assert.match(restored, /<img[^>]*\ssrc="https:\/\/tracker\.test\/pixel\.gif\?id=42"/)
+  assert.doesNotMatch(restored, /data-remote-src/)
+})
+
+test('a sender cannot smuggle their own data-remote-src past the blocking', async () => {
+  const { restoreRemoteImages } = await import('../src/lib/remote-images.js')
+  const clean = sanitizeEmailHtml('<img data-remote-src="https://evil.test/x.gif" alt="a"><img data-remote-src="javascript:alert(1)">')
+
+  assert.doesNotMatch(clean, /evil\.test/, 'a sender-supplied value is dropped, not honoured')
+  assert.doesNotMatch(restoreRemoteImages(clean), /javascript:|evil\.test/)
+})
+
+test('non-http images and message text are left alone by blocking and restoring', async () => {
+  const { hasBlockedRemoteImages, restoreRemoteImages } = await import('../src/lib/remote-images.js')
+
+  assert.equal(hasBlockedRemoteImages(sanitizeEmailHtml('<img src="cid:logo123" alt="inline">')), false)
+  assert.match(sanitizeEmailHtml('<img src="cid:logo123" alt="inline">'), /src="cid:logo123"/)
+  assert.doesNotMatch(sanitizeEmailHtml('<img src="javascript:alert(1)">'), /javascript:/)
+
+  const text = '<p>the attribute data-remote-src= is mentioned in this text</p>'
+  assert.equal(restoreRemoteImages(text), text)
+  assert.equal(hasBlockedRemoteImages(text), false)
+})
+
+test('blocking can be switched off for callers that want the images', () => {
+  const html = sanitizeEmailHtml('<img src="https://example.test/a.png">', { blockRemoteImages: false })
+  assert.match(html, /\ssrc="https:\/\/example\.test\/a\.png"/)
+  assert.doesNotMatch(html, /data-remote-src/)
+})

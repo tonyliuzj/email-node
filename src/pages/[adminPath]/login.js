@@ -46,6 +46,8 @@ export const getServerSideProps = withSessionSsr(async ({ req, params }) => {
 export default function Login({ adminPath, siteTitle }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [code, setCode] = useState('')
+  const [needsCode, setNeedsCode] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const router = useRouter()
 
@@ -56,12 +58,19 @@ export default function Login({ adminPath, siteTitle }) {
       const res = await fetch(`/api/${adminPath}/login`, {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, code }),
       })
       if (res.ok) router.push(`/${adminPath}`)
       else {
-        const { error: msg } = await res.json()
-        toast.error(msg || 'Login failed')
+        const { error: msg, totpRequired } = await res.json()
+        if (totpRequired) {
+          // The password was right; the second step is next. Only complain if a code was already tried.
+          setNeedsCode(true)
+          if (code) toast.error(msg || 'That code is not correct.')
+          setCode('')
+        } else {
+          toast.error(msg || 'Login failed')
+        }
         setIsLoading(false)
       }
     } catch {
@@ -113,6 +122,25 @@ export default function Login({ adminPath, siteTitle }) {
                   placeholder="Enter password"
                 />
               </div>
+              {needsCode ? (
+                <div className="space-y-2">
+                  <Label htmlFor="code">
+                    Authentication code
+                  </Label>
+                  <Input
+                    id="code"
+                    value={code}
+                    onChange={e => setCode(e.target.value)}
+                    autoFocus
+                    autoComplete="one-time-code"
+                    required
+                    placeholder="123456 or a recovery code"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Enter the 6-digit code from your authenticator app, or one of your recovery codes.
+                  </p>
+                </div>
+              ) : null}
             </CardContent>
             <CardFooter>
               <div className="grid w-full gap-2">

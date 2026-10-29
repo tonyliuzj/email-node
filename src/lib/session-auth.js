@@ -1,5 +1,7 @@
 import crypto from 'crypto'
-import { getAdmin, getEmailById } from './db.js'
+import { getAdmin, getEmailById, purgeInactiveAddresses, touchAddressActivity } from './db.js'
+
+const ACTIVITY_TOUCH_MS = 60 * 60 * 1000
 
 // Sessions are sealed cookies, so by themselves they stay valid until they expire. Each one also
 // carries a fingerprint of the credential it was issued for. Every request compares it with the
@@ -19,10 +21,23 @@ export function buildUserSession(email) {
   }
 }
 
+// Turning two-factor on or off changes this too, so it also signs out the other sessions.
+function adminCredential(admin) {
+  return `${admin.password_hash}|${admin.totp_enabled ? admin.totp_secret : ''}`
+}
+
 export function buildAdminSession(admin) {
   return {
     username: admin.username,
-    v: credentialFingerprint(admin.password_hash),
+    v: credentialFingerprint(adminCredential(admin)),
+  }
+}
+
+// Last activity only needs to be roughly right, so write it at most once an hour per address.
+function recordActivity(email) {
+  const last = Date.parse(`${String(email.last_active_at || '').replace(' ', 'T')}Z`)
+  if (!Number.isFinite(last) || Date.now() - last > ACTIVITY_TOUCH_MS) {
+    touchAddressActivity(email.id)
   }
 }
 
@@ -50,6 +65,8 @@ export async function getSessionEmail(req) {
   const stored = req.session.get('email')
   if (!stored) return null
 
+  purgeInactiveAddresses()
+
   const id = Number(stored.id ?? stored.email_id)
   const email = Number.isInteger(id) ? getEmailById(id) : null
 
@@ -67,6 +84,8 @@ export async function getSessionEmail(req) {
     return null
   }
 
+  recordActivity(email)
+
   return {
     id: email.id,
     email_id: email.id,
@@ -82,7 +101,7 @@ export function getSessionAdmin(req) {
 
   const admin = getAdmin(stored.username)
   if (!admin || admin.username !== stored.username) return null
-  if (stored.v !== credentialFingerprint(admin.password_hash)) return null
+  if (stored.v !== credentialFingerprint(adminCredential(admin))) return null
 
   return { username: admin.username }
 }

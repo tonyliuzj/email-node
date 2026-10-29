@@ -11,6 +11,8 @@ import { Button } from '../../components/ui/button'
 import { Badge } from '../../components/ui/badge'
 import { Separator } from '../../components/ui/separator'
 import { Skeleton } from '../../components/ui/skeleton'
+import { AddressesCard } from '../../components/admin/addresses-card'
+import { TwoFactorCard } from '../../components/admin/two-factor-card'
 import {
   Table,
   TableBody,
@@ -194,10 +196,8 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
     })
     const data = await res.json()
     if (res.ok) {
-      toast.success('Username updated! You must log in again.')
-      setTimeout(() => {
-        router.push(`/${adminPath}/login`)
-      }, 2000)
+      toast.success('Username updated.')
+      router.replace(router.asPath)
     } else {
       toast.error(data.error || 'Failed to update username.')
     }
@@ -243,7 +243,8 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
       setDomainForm({})
       fetchDomains()
     } else {
-      toast.error('Error saving domain.')
+      const data = await res.json().catch(() => ({}))
+      toast.error(data.error || 'Error saving domain.')
     }
   }
 
@@ -356,7 +357,8 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
         body: JSON.stringify({ id })
       })
       if (res.ok) {
-        toast.success('Domain deleted.')
+        const data = await res.json().catch(() => ({}))
+        toast.success(data.removedAddresses ? `Domain deleted, along with ${data.removedAddresses} address(es).` : 'Domain deleted.')
         fetchDomains()
       } else {
         toast.error('Error deleting domain.')
@@ -564,6 +566,10 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                 </CardContent>
               </Card>
             </div>
+          </section>
+
+          <section className="w-full">
+            <AddressesCard adminPath={adminPath} />
           </section>
 
           <section className="w-full">
@@ -827,6 +833,12 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
                   </form>
                 </CardContent>
               </Card>
+            </div>
+          </section>
+
+          <section className="w-full">
+            <div className={adminSectionGridClass}>
+              <TwoFactorCard adminPath={adminPath} />
             </div>
           </section>
         </div>

@@ -3,8 +3,10 @@ import net from 'net'
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 const MAX_BUCKETS = 10_000
+const MAX_FAILURE_KEYS = 10_000
 const SWEEP_INTERVAL_MS = 60_000
 const buckets = new Map()
+const failures = new Map()
 let nextSweepAt = 0
 
 function firstHeaderValue(value) {
@@ -121,6 +123,41 @@ export function applyRateLimit(req, res, { key, max = 20, windowMs = 60_000 } = 
   return true
 }
 
+// Per-account failure counting, independent of the client IP. The per-IP limit stops one machine, but
+// not many machines guessing the same account, so repeated failures lock that account for a while.
+function pruneFailures(now) {
+  for (const [key, entry] of failures) {
+    if (entry.resetAt <= now) failures.delete(key)
+  }
+  for (const key of failures.keys()) {
+    if (failures.size < MAX_FAILURE_KEYS) break
+    failures.delete(key)
+  }
+}
+
+export function isLockedOut(key, { max = 8 } = {}) {
+  const entry = failures.get(key)
+  return Boolean(entry) && entry.resetAt > Date.now() && entry.count >= max
+}
+
+export function recordFailure(key, { windowMs = 15 * 60_000 } = {}) {
+  const now = Date.now()
+  const entry = failures.get(key)
+
+  if (!entry || entry.resetAt <= now) {
+    if (failures.size >= MAX_FAILURE_KEYS) pruneFailures(now)
+    failures.set(key, { count: 1, resetAt: now + windowMs })
+    return 1
+  }
+
+  entry.count += 1
+  return entry.count
+}
+
+export function clearFailures(key) {
+  failures.delete(key)
+}
+
 // Constant-time comparison for secrets typed by a user. Hashing first makes the lengths equal.
 export function secretsMatch(provided, expected) {
   const digest = value => crypto.createHash('sha256').update(String(value ?? '')).digest()
@@ -144,6 +181,7 @@ export function protectMutation(req, res, rateLimitOptions) {
 
 export function resetRateLimitsForTests() {
   buckets.clear()
+  failures.clear()
   nextSweepAt = 0
 }
 

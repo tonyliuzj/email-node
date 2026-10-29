@@ -1,6 +1,6 @@
-import bcrypt from 'bcryptjs'
 import { withSessionRoute } from '../../../lib/session'
-import { getAdmin, getAdminPath, isSetupRequired, spendPasswordCheckTime } from '../../../lib/db'
+import { getAdminPath, isSetupRequired } from '../../../lib/db'
+import { authenticateAdmin } from '../../../lib/admin-auth'
 import { startAdminSession } from '../../../lib/session-auth'
 import { protectMutation } from '../../../lib/security'
 
@@ -23,20 +23,23 @@ export default withSessionRoute(async (req, res) => {
     return
   }
 
-  const { username, password } = req.body || {}
-  const admin = typeof username === 'string' ? getAdmin(username) : null
+  const { username, password, code } = req.body || {}
+  const result = authenticateAdmin({ username, password, code })
 
-  // An unknown username takes as long to reject as a wrong password, so the two can't be told apart.
-  if (!admin || typeof password !== 'string') {
-    spendPasswordCheckTime(password)
+  if (result.status === 'locked') {
+    return res.status(429).json({ error: 'Too many failed attempts. Try again in a few minutes.' })
+  }
+  if (result.status === 'totp-required') {
+    return res.status(401).json({ error: 'Enter the code from your authenticator app.', totpRequired: true })
+  }
+  if (result.status === 'invalid-code') {
+    return res.status(401).json({ error: 'That code is not correct.', totpRequired: true })
+  }
+  if (result.status !== 'ok') {
     return res.status(401).json({ error: 'Invalid credentials' })
   }
 
-  if (!bcrypt.compareSync(password, admin.password_hash)) {
-    return res.status(401).json({ error: 'Invalid credentials' })
-  }
-
-  await startAdminSession(req, admin)
+  await startAdminSession(req, result.admin)
 
   return res.status(200).json({ ok: true })
 })

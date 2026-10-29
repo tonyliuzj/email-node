@@ -114,6 +114,27 @@ db.prepare('UPDATE admin SET username = TRIM(username) WHERE username != TRIM(us
 
 const TIMING_HASH = bcrypt.hashSync('timing-placeholder', 10)
 
+// Table and column names here are constants, never user input.
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all()
+  if (columns.some(existing => existing.name === column)) return false
+  db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run()
+  return true
+}
+
+// Existing addresses start their inactivity clock at the upgrade, so switching retention on later
+// cannot instantly delete everything that was created long ago.
+if (ensureColumn('emails', 'last_active_at', 'DATETIME')) {
+  db.prepare("UPDATE emails SET last_active_at = datetime('now')").run()
+}
+ensureColumn('admin', 'totp_secret', 'TEXT')
+ensureColumn('admin', 'totp_enabled', 'INTEGER DEFAULT 0')
+ensureColumn('admin', 'totp_last_step', 'INTEGER DEFAULT 0')
+ensureColumn('admin', 'recovery_codes', 'TEXT')
+
+const PURGE_INTERVAL_MS = 60 * 60 * 1000
+let lastPurgeAt = 0
+
 export function isSetupRequired() {
   const row = db.prepare('SELECT COUNT(*) as count FROM admin').get()
   return Number(row?.count || 0) === 0
@@ -313,6 +334,7 @@ export function setTurnstileConfig({
 }
 
 export function createEmail(emailAddress, passkey, domainName) {
+  purgeInactiveAddresses()
   const normalizedEmail = normalizeEmailAddress(emailAddress)
   const normalizedDomain = normalizeDomainName(domainName)
   if (!normalizedEmail || !normalizedDomain || !normalizedEmail.endsWith(`@${normalizedDomain}`)) {
@@ -327,8 +349,8 @@ export function createEmail(emailAddress, passkey, domainName) {
   const passkeyHash = bcrypt.hashSync(passkey, 10);
   try {
     const result = db.prepare(`
-      INSERT INTO emails (email_address, passkey_hash, domain_name)
-      VALUES (?, ?, ?)
+      INSERT INTO emails (email_address, passkey_hash, domain_name, last_active_at)
+      VALUES (?, ?, ?, datetime('now'))
     `).run(normalizedEmail, passkeyHash, normalizedDomain);
     return { success: true, emailId: result.lastInsertRowid };
   } catch (error) {
@@ -346,6 +368,7 @@ export function getEmailByAddress(emailAddress) {
 }
 
 export function verifyEmail(emailAddress, passkey) {
+  purgeInactiveAddresses()
   const email = getEmailByAddress(emailAddress);
   if (!email) {
     spendPasswordCheckTime(passkey);
@@ -442,6 +465,121 @@ export function deleteDomainWithAddresses(domainId) {
 // revealing whether the account exists.
 export function spendPasswordCheckTime(secret) {
   bcrypt.compareSync(typeof secret === 'string' ? secret : '', TIMING_HASH)
+}
+
+export function getAddressRetentionDays() {
+  const days = Number.parseInt(getSetting('address_retention_days') || '0', 10)
+  return Number.isInteger(days) && days > 0 ? days : 0
+}
+
+export function setAddressRetentionDays(value) {
+  const days = Number.parseInt(value, 10)
+  if (!Number.isInteger(days) || days < 0 || days > 3650) {
+    return { success: false, error: 'Retention must be 0 (keep forever) or between 1 and 3650 days.' }
+  }
+
+  setSetting('address_retention_days', String(days))
+  lastPurgeAt = 0 // let the new limit apply on the next request instead of waiting out the interval
+  return { success: true, value: days }
+}
+
+// Activity is the owner signing in or reading the inbox. Mail arriving for an address does not count.
+export function touchAddressActivity(emailId) {
+  db.prepare("UPDATE emails SET last_active_at = datetime('now') WHERE id = ?").run(emailId)
+}
+
+export function countInactiveAddresses(days) {
+  const row = db
+    .prepare("SELECT COUNT(*) AS count FROM emails WHERE COALESCE(last_active_at, created_at) < datetime('now', ?)")
+    .get(`-${Number(days)} days`)
+  return Number(row?.count || 0)
+}
+
+// Cheap enough to call from any request: it does nothing unless retention is on and the hour is up.
+export function purgeInactiveAddresses({ force = false } = {}) {
+  const days = getAddressRetentionDays()
+  if (!days) return { removed: 0 }
+
+  const now = Date.now()
+  if (!force && now - lastPurgeAt < PURGE_INTERVAL_MS) return { removed: 0 }
+  lastPurgeAt = now
+
+  const result = db
+    .prepare("DELETE FROM emails WHERE COALESCE(last_active_at, created_at) < datetime('now', ?)")
+    .run(`-${days} days`)
+  return { removed: result.changes }
+}
+
+export function listAddresses({ search = '', page = 1, pageSize = 25 } = {}) {
+  const size = Math.min(Math.max(Number.parseInt(pageSize, 10) || 25, 1), 100)
+  const requestedPage = Math.max(Number.parseInt(page, 10) || 1, 1)
+  const term = String(search || '').trim().toLowerCase().slice(0, 200)
+  const where = term ? "WHERE email_address LIKE ? ESCAPE '\\'" : ''
+  const params = term ? [`%${term.replace(/[\\%_]/g, '\\$&')}%`] : []
+
+  const total = Number(db.prepare(`SELECT COUNT(*) AS count FROM emails ${where}`).get(...params).count)
+  const rows = db
+    .prepare(`
+      SELECT id, email_address, domain_name, created_at, last_active_at
+      FROM emails ${where}
+      ORDER BY id DESC
+      LIMIT ? OFFSET ?
+    `)
+    .all(...params, size, (requestedPage - 1) * size)
+
+  return { total, page: requestedPage, pageSize: size, rows }
+}
+
+export function deleteEmailsByIds(ids) {
+  const validIds = [...new Set((Array.isArray(ids) ? ids : []).map(Number).filter(id => Number.isInteger(id) && id > 0))]
+  if (validIds.length === 0) return 0
+
+  const remove = db.transaction(list => {
+    const statement = db.prepare('DELETE FROM emails WHERE id = ?')
+    return list.reduce((count, id) => count + statement.run(id).changes, 0)
+  })
+  return remove(validIds)
+}
+
+export function beginTotpEnrollment(username, encryptedSecret) {
+  db.prepare('UPDATE admin SET totp_secret = ?, totp_enabled = 0, totp_last_step = 0, recovery_codes = NULL WHERE username = ?')
+    .run(encryptedSecret, username)
+}
+
+export function enableTotp(username, recoveryCodeHashes, lastStep) {
+  const result = db
+    .prepare('UPDATE admin SET totp_enabled = 1, totp_last_step = ?, recovery_codes = ? WHERE username = ? AND totp_secret IS NOT NULL')
+    .run(lastStep, JSON.stringify(recoveryCodeHashes), username)
+  return result.changes > 0
+}
+
+export function disableTotp(username) {
+  db.prepare('UPDATE admin SET totp_secret = NULL, totp_enabled = 0, totp_last_step = 0, recovery_codes = NULL WHERE username = ?')
+    .run(username)
+}
+
+export function updateTotpLastStep(username, step) {
+  db.prepare('UPDATE admin SET totp_last_step = ? WHERE username = ?').run(step, username)
+}
+
+export function getRecoveryCodeHashes(admin) {
+  try {
+    const parsed = JSON.parse(admin?.recovery_codes || '[]')
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+// A recovery code works once: it is removed as it is accepted.
+export function consumeRecoveryCode(username, hash) {
+  const admin = getAdmin(username)
+  const remaining = getRecoveryCodeHashes(admin)
+  if (!remaining.includes(hash)) return false
+
+  db.prepare('UPDATE admin SET recovery_codes = ? WHERE username = ?')
+    .run(JSON.stringify(remaining.filter(existing => existing !== hash)), username)
+  return true
 }
 
 export { db }

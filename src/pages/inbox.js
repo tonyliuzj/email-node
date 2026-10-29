@@ -11,6 +11,7 @@ import { Card } from '../components/ui/card';
 import { Separator } from '../components/ui/separator';
 import { Skeleton } from '../components/ui/skeleton';
 import { withUser } from '../lib/user-auth';
+import { restoreRemoteImages } from '../lib/remote-images';
 import { cn } from '../lib/utils';
 
 export const getServerSideProps = withUser(async ({ user }) => {
@@ -98,6 +99,8 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
   const refreshSeconds = Math.max(5, Number.parseInt(inboxRefreshSeconds, 10) || 10);
   const [inbox, setInbox] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
+  // UIDs of the messages whose remote images the reader chose to load.
+  const [imagesLoadedFor, setImagesLoadedFor] = useState(() => new Set());
   const [countdown, setCountdown] = useState(refreshSeconds);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const seenUids = useRef(new Set());
@@ -397,12 +400,32 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                   <div className="min-h-0 flex-1 overflow-y-auto bg-background px-4 py-6 sm:px-8">
                     <div className="mx-auto max-w-4xl">
                     {selectedEmail.html ? (
-                      <iframe
-                        title={selectedEmail.subject || 'Email message'}
-                        sandbox="allow-popups allow-popups-to-escape-sandbox"
-                        srcDoc={selectedEmail.html}
-                        className="h-[70vh] min-h-[420px] w-full border-0 bg-background"
-                      />
+                      <>
+                        {selectedEmail.hasRemoteImages && !imagesLoadedFor.has(selectedEmail.uid) ? (
+                          <div
+                            className="mb-4 flex flex-col gap-2 rounded-md border bg-muted/40 p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+                            data-testid="remote-images-banner"
+                          >
+                            <span className="text-muted-foreground">
+                              Images from the internet are blocked, so the sender can&apos;t tell you opened this.
+                            </span>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setImagesLoadedFor(current => new Set(current).add(selectedEmail.uid))}
+                            >
+                              Load images
+                            </Button>
+                          </div>
+                        ) : null}
+                        <iframe
+                          title={selectedEmail.subject || 'Email message'}
+                          sandbox="allow-popups allow-popups-to-escape-sandbox"
+                          srcDoc={imagesLoadedFor.has(selectedEmail.uid) ? restoreRemoteImages(selectedEmail.html) : selectedEmail.html}
+                          className="h-[70vh] min-h-[420px] w-full border-0 bg-background"
+                        />
+                      </>
                     ) : (
                       <div className="whitespace-pre-wrap text-sm leading-6">
                         {selectedEmail.text}

@@ -13,7 +13,7 @@ A modern, self-hosted IMAP webmail UI with an inbox address system. Email Node d
   Configure multiple domains backed by catch-all IMAP mailboxes. Users can choose from available domains when creating addresses.
 
 - **IMAP Webmail Inbox**
-  Polls IMAP on a configurable interval. View sender, subject, and message preview, then click to read full emails with sanitized HTML rendering.
+  Polls IMAP on a configurable interval. View sender, subject, and message preview, then click to read full emails with sanitized HTML rendering. Images from the internet are blocked until the reader clicks **Load images**, so senders cannot track who opened a message.
 
 - **Modern, Responsive UI**
   Clean interface with dark mode support, built with Tailwind CSS and Lucide icons. Mobile-friendly design with smooth animations.
@@ -23,6 +23,8 @@ A modern, self-hosted IMAP webmail UI with an inbox address system. Email Node d
   - Bcrypt password hashing for admin and user passkeys
   - Passkey regeneration with manual masking controls
   - Changing a passkey or the admin password signs out every other device
+  - Optional two-factor authentication (authenticator app) for the admin, with one-time recovery codes
+  - Repeated failed admin logins lock the account for a while, whatever IP they come from
   - Optional Cloudflare Turnstile CAPTCHA for address creation and login
   - Optional setup token so only you can create the first admin account
 
@@ -30,6 +32,8 @@ A modern, self-hosted IMAP webmail UI with an inbox address system. Email Node d
   - First-run setup page for creating the initial admin user
   - Configure multiple domains with individual IMAP settings
   - Manage Turnstile CAPTCHA settings for address creation and login
+  - Browse, search and delete the addresses visitors have created, and expire unused ones automatically
+  - Turn on two-factor authentication for the admin account
   - Change admin credentials and customize site title
   - Dynamic admin path configuration
 
@@ -162,6 +166,17 @@ Access the admin panel at `/admin` (or your custom admin path):
 | **Turnstile Secret Key**         | Cloudflare Turnstile secret key                  |
 | **Registration CAPTCHA**         | Enable/disable CAPTCHA for account creation      |
 | **Login CAPTCHA**                | Enable/disable CAPTCHA for login                 |
+| **Addresses**                    | Search, delete (one or many) any visitor address |
+| **Inactivity limit**             | Delete addresses unused for N days (0 = never)   |
+| **Two-factor authentication**    | Authenticator-app code required at admin login   |
+
+**Deleting addresses.** The **Addresses** card lists every address with when it was created and last used. Deleting one removes its passkey and sign-in for good; the name can be registered again. Deleting a domain deletes the addresses on it too.
+
+**Inactivity limit.** An address counts as used when its owner signs in or opens the inbox; mail arriving for it does not count. With a limit set (for example 90 days), unused addresses are removed the next time someone uses the site, checked at most once an hour. The page tells you how many would go before you save. Existing addresses start counting from the day you upgrade, so switching this on never deletes old addresses straight away.
+
+**Two-factor authentication.** Under **Two-factor authentication**, confirm your password, add the shown key to an authenticator app (Google Authenticator, Authy, 1Password, Bitwarden: choose "enter a setup key"), then type the 6-digit code it shows. You are given eight recovery codes, each usable once, so keep them somewhere safe. Turning it on or off signs out every other device. If you lose both the app and the codes, delete the secret directly: `sqlite3 data/temp-mail.db "UPDATE admin SET totp_enabled=0, totp_secret=NULL, recovery_codes=NULL"`.
+
+Because failed logins are counted per account, someone who knows your admin username can lock you out for about 15 minutes by guessing wrongly eight times. Pick a username that isn't obvious.
 
 ### Domain Configuration
 
@@ -222,12 +237,16 @@ src/
 │   ├── user-auth.js                # Page and route wrappers for signed-in users
 │   ├── security.js                 # Client IP, rate limits, same-origin checks, setup token
 │   ├── recipients.js               # Exact recipient matching for IMAP results
+│   ├── admin-auth.js               # Admin sign-in: password, lockout, second factor
+│   ├── totp.js                     # Authenticator-app codes and recovery codes
+│   ├── remote-images.js            # Blocks/restores remote images in messages
 │   ├── validation.js               # Input normalisation
 │   ├── email-sanitizer.js          # HTML sanitising for message bodies
 │   ├── secret-store.js             # Encryption for stored secrets
 │   └── turnstile.js                # Turnstile verification
 ├── components/
 │   ├── app-shell.js                # Shared app shell built with shadcn/ui
+│   ├── admin/                      # Admin dashboard cards (addresses, two-factor)
 │   └── ui/                         # shadcn/ui components
 │       └── ...
 └── styles/
@@ -355,6 +374,9 @@ Most configuration is done through the admin panel. Environment variables:
 - **Sessions are checked against the database** on every request. Regenerating a passkey, changing the admin password or username, or deleting an address signs out all other sessions.
 - **Constant-time logins**: an unknown address or admin username takes as long to reject as a wrong password.
 - **Setup protection** with an optional `SETUP_TOKEN`, so a freshly deployed server cannot be claimed by whoever finds it first.
+- **Two-factor login** for the admin (RFC 6238 codes that cannot be replayed, hashed single-use recovery codes) and per-account lockout after repeated failures.
+- **Remote image blocking**: images from the internet in a message do not load until the reader asks, so tracking pixels reveal nothing.
+- **Strict script policy**: in production, pages only run scripts served by this site (plus Cloudflare Turnstile). There is no `unsafe-inline` or `unsafe-eval`, so injected markup cannot execute code even if it got past the sanitiser.
 - **Reserved admin paths**: the admin path cannot be set to a name such as `inbox` or `setup`, which would make the dashboard unreachable.
 - **Secure cookie settings** with httpOnly, sameSite=strict and secure flags, plus an HSTS header in production.
 
