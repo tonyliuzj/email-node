@@ -23,7 +23,7 @@ jobs:
 
       - name: Get latest release
         id: get_release
-        uses: actions/github-script@v6
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -40,7 +40,7 @@ jobs:
       - name: Create a new release if none exists
         id: create_release
         if: steps.get_release.outputs.release_id == ''
-        uses: actions/github-script@v6
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -57,7 +57,7 @@ jobs:
 
       - name: Delete existing email-node.sh asset (if exists)
         continue-on-error: true
-        uses: actions/github-script@v6
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
