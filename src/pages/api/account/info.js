@@ -1,5 +1,6 @@
 import { getSafeUserEmailsByUserId } from '../../../lib/db.js'
 import { withSessionRoute } from '../../../lib/session.js'
+import { getSessionEmail } from '../../../lib/session-auth.js'
 
 async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -8,21 +9,13 @@ async function handler(req, res) {
   }
 
   try {
-    // Get user data from iron-session
-    const userEmail = req.session.get('email')
-    
+    const userEmail = await getSessionEmail(req)
+
     if (!userEmail) {
       return res.status(401).json({ error: 'Not authenticated' })
     }
 
-    // Validate that userEmail has the expected structure
-    const emailId = userEmail.id || userEmail.email_id
-    if (!emailId) {
-      console.error('User email object missing ID:', userEmail)
-      return res.status(401).json({ error: 'Invalid session data' })
-    }
-
-    const userEmails = getSafeUserEmailsByUserId(emailId)
+    const userEmails = getSafeUserEmailsByUserId(userEmail.id)
     const emailsWithPasskey = userEmails.map(email => ({
       ...email,
       passkey: null,
@@ -30,7 +23,7 @@ async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      userId: emailId,
+      userId: userEmail.id,
       emails: emailsWithPasskey
     })
 

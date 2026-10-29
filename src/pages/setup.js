@@ -11,6 +11,7 @@ import { withSessionSsr } from '../lib/session'
 
 export const getServerSideProps = withSessionSsr(async () => {
   const { getAdminPath, isSetupRequired } = await import('../lib/db')
+  const { isSetupTokenRequired } = await import('../lib/security')
 
   if (!isSetupRequired()) {
     return {
@@ -25,14 +26,16 @@ export const getServerSideProps = withSessionSsr(async () => {
     props: {
       adminPath: getAdminPath(),
       siteTitle: 'Setup Email Node',
+      setupTokenRequired: isSetupTokenRequired(),
     },
   }
 })
 
-export default function Setup({ adminPath }) {
+export default function Setup({ adminPath, setupTokenRequired }) {
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [setupToken, setSetupToken] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const router = useRouter()
 
@@ -44,7 +47,7 @@ export default function Setup({ adminPath }) {
       const res = await fetch('/api/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, confirmPassword }),
+        body: JSON.stringify({ username, password, confirmPassword, setupToken }),
       })
       const data = await res.json()
 
@@ -75,6 +78,21 @@ export default function Setup({ adminPath }) {
           </CardHeader>
           <form onSubmit={submit}>
             <CardContent className="space-y-4">
+              {setupTokenRequired ? (
+                <div className="space-y-2">
+                  <Label htmlFor="setup-token">Setup token</Label>
+                  <Input
+                    id="setup-token"
+                    value={setupToken}
+                    onChange={event => setSetupToken(event.target.value)}
+                    autoComplete="off"
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Printed by the installer. It is also the SETUP_TOKEN value in .env.local.
+                  </p>
+                </div>
+              ) : null}
               <div className="space-y-2">
                 <Label htmlFor="setup-username">Username</Label>
                 <Input
@@ -95,7 +113,7 @@ export default function Setup({ adminPath }) {
                   onChange={event => setPassword(event.target.value)}
                   autoComplete="new-password"
                   required
-                  minLength={8}
+                  minLength={12}
                 />
               </div>
               <div className="space-y-2">
@@ -107,7 +125,7 @@ export default function Setup({ adminPath }) {
                   onChange={event => setConfirmPassword(event.target.value)}
                   autoComplete="new-password"
                   required
-                  minLength={8}
+                  minLength={12}
                 />
               </div>
             </CardContent>

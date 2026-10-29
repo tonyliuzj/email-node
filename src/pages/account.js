@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { Copy, EyeOff, Inbox, LogOut, RefreshCw, ShieldCheck, User } from 'lucide-react';
+import { Copy, EyeOff, Inbox, LogOut, RefreshCw, ShieldCheck, Trash2, User } from 'lucide-react';
 import { toast } from 'sonner';
 import { AppShell } from '../components/app-shell';
 import { Button } from '../components/ui/button';
@@ -87,6 +87,7 @@ export default function Account({ siteTitle, adminPath, user }) {
   const [userEmails, setUserEmails] = useState([]);
   const [loading, setLoading] = useState(true);
   const [regeneratingId, setRegeneratingId] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [newlyGeneratedPasskeys, setNewlyGeneratedPasskeys] = useState(new Set());
 
   useEffect(() => {
@@ -170,6 +171,37 @@ export default function Account({ siteTitle, adminPath, user }) {
       toast.error('Failed to regenerate passkey. Please try again.');
     } finally {
       setRegeneratingId(null);
+    }
+  };
+
+  const handleDeleteAddress = async email => {
+    const confirmed = window.confirm(
+      `Delete ${email.email_address}? The address, its passkey and its sign-in are removed for good, and you will no longer be able to read its mail here.`
+    );
+    if (!confirmed) return;
+
+    setIsDeleting(true);
+    try {
+      const response = await fetch('/api/account/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emailId: email.id }),
+        credentials: 'include',
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        toast.error(data.error || 'Failed to delete the address.');
+        return;
+      }
+
+      toast.success('Address deleted.');
+      router.push('/');
+    } catch (err) {
+      console.error('Address deletion error:', err);
+      toast.error('Failed to delete the address. Please try again.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -300,6 +332,17 @@ export default function Account({ siteTitle, adminPath, user }) {
                 <LogOut className="h-4 w-4" />
                 Sign out
               </Button>
+              {userEmails.length > 0 ? (
+                <Button
+                  variant="outline"
+                  className="w-full text-destructive hover:text-destructive"
+                  onClick={() => handleDeleteAddress(userEmails[0])}
+                  disabled={isDeleting}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {isDeleting ? 'Deleting...' : 'Delete this address'}
+                </Button>
+              ) : null}
             </CardContent>
           </Card>
         </div>

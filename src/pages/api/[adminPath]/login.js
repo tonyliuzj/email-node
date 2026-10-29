@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs'
 import { withSessionRoute } from '../../../lib/session'
-import { getAdmin, getAdminPath, isSetupRequired } from '../../../lib/db'
+import { getAdmin, getAdminPath, isSetupRequired, spendPasswordCheckTime } from '../../../lib/db'
+import { startAdminSession } from '../../../lib/session-auth'
 import { protectMutation } from '../../../lib/security'
 
 export default withSessionRoute(async (req, res) => {
@@ -22,15 +23,20 @@ export default withSessionRoute(async (req, res) => {
     return
   }
 
-  const { username, password } = req.body
-  const admin = getAdmin(username)
+  const { username, password } = req.body || {}
+  const admin = typeof username === 'string' ? getAdmin(username) : null
 
-  if (!admin || !bcrypt.compareSync(password, admin.password_hash)) {
+  // An unknown username takes as long to reject as a wrong password, so the two can't be told apart.
+  if (!admin || typeof password !== 'string') {
+    spendPasswordCheckTime(password)
     return res.status(401).json({ error: 'Invalid credentials' })
   }
 
-  req.session.set('admin', { username })
-  await req.session.save()
+  if (!bcrypt.compareSync(password, admin.password_hash)) {
+    return res.status(401).json({ error: 'Invalid credentials' })
+  }
+
+  await startAdminSession(req, admin)
 
   return res.status(200).json({ ok: true })
 })

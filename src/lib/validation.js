@@ -2,6 +2,9 @@ const DOMAIN_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 const EMAIL_LOCAL_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/
 const ADMIN_PATH_PATTERN = /^[a-z0-9][a-z0-9_-]{2,63}$/
 const HOST_PATTERN = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/i
+// Top-level routes that exist as real pages. The admin path is a dynamic route, so a static page with
+// the same name always wins and the dashboard would become unreachable.
+const RESERVED_ADMIN_PATHS = new Set(['api', 'setup', 'inbox', 'account', '_next', 'static', 'public'])
 
 export function normalizeDomainName(value) {
   const domain = String(value || '').trim().toLowerCase()
@@ -49,6 +52,7 @@ export function buildEmailAddress(localPart, domainName) {
 
 export function normalizeAdminPath(value) {
   const adminPath = String(value || '').trim().toLowerCase()
+  if (RESERVED_ADMIN_PATHS.has(adminPath)) return null
   return ADMIN_PATH_PATTERN.test(adminPath) ? adminPath : null
 }
 

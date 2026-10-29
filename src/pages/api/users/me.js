@@ -1,7 +1,8 @@
 import { withSessionRoute } from '../../../lib/session.js'
+import { getSessionEmail } from '../../../lib/session-auth.js'
 
-function handler(req, res) {
-  const user = req.session.get('email')
+async function handler(req, res) {
+  const user = await getSessionEmail(req)
   if (!user) {
     return res.status(401).json({ error: 'Not authenticated' })
   }

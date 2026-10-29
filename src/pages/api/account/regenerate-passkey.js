@@ -1,5 +1,6 @@
-import { regeneratePasskey, getUserEmailsByUserId } from '../../../lib/db.js'
+import { regeneratePasskey, getEmailById } from '../../../lib/db.js'
 import { withSessionRoute } from '../../../lib/session.js'
+import { getSessionEmail, startUserSession } from '../../../lib/session-auth.js'
 import { nanoid } from 'nanoid'
 import { protectMutation } from '../../../lib/security.js'
 
@@ -14,9 +15,8 @@ async function handler(req, res) {
       return
     }
 
-    // Get user data from iron-session
-    const userEmail = req.session.get('email')
-    
+    const userEmail = await getSessionEmail(req)
+
     if (!userEmail) {
       return res.status(401).json({ error: 'Not authenticated' })
     }
@@ -27,12 +27,7 @@ async function handler(req, res) {
       return res.status(400).json({ error: 'Email ID is required' })
     }
 
-    // Get user emails using the email ID from the session
-    const userEmailId = userEmail.id || userEmail.email_id
-    const userEmails = getUserEmailsByUserId(userEmailId)
-    const targetEmail = userEmails.find(email => email.id === emailId)
-
-    if (!targetEmail) {
+    if (emailId !== userEmail.id) {
       return res.status(403).json({ error: 'Unauthorized access to this email' })
     }
 
@@ -41,10 +36,13 @@ async function handler(req, res) {
 
     // Update passkey in database
     const success = regeneratePasskey(emailId, newPasskey)
-    
+
     if (!success) {
       return res.status(500).json({ error: 'Failed to regenerate passkey' })
     }
+
+    // Every session is bound to the old passkey, so this signs out all other devices. Re-issue this one.
+    await startUserSession(req, getEmailById(emailId))
 
     return res.status(200).json({
       success: true,

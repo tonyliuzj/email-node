@@ -1,5 +1,6 @@
-import { toSafeSessionEmail, verifyEmail } from '../../../lib/db.js'
+import { verifyEmail } from '../../../lib/db.js'
 import { withSessionRoute } from '../../../lib/session.js'
+import { startUserSession } from '../../../lib/session-auth.js'
 import { isTurnstileEnabled, verifyTurnstileToken, getClientIp } from '../../../lib/turnstile.js'
 import { protectMutation } from '../../../lib/security.js'
 import { normalizeEmailAddress } from '../../../lib/validation.js'
@@ -17,7 +18,7 @@ async function handler(req, res) {
 
     const { email, passkey, turnstileToken } = req.body || {}
 
-    
+
     if (isTurnstileEnabled('login')) {
       const verification = await verifyTurnstileToken(turnstileToken, getClientIp(req))
       if (!verification.success) {
@@ -26,20 +27,19 @@ async function handler(req, res) {
       }
     }
 
-    
+
     const normalizedEmail = normalizeEmailAddress(email)
-    if (!normalizedEmail || !passkey) {
+    if (!normalizedEmail || typeof passkey !== 'string' || !passkey) {
       return res.status(400).json({ error: 'Email and passkey are required' })
     }
 
-    
+
     const verificationResult = verifyEmail(normalizedEmail, passkey)
     if (!verificationResult.success) {
       return res.status(401).json({ error: 'Invalid email or passkey' })
     }
 
-    req.session.set('email', toSafeSessionEmail(verificationResult.email))
-    await req.session.save()
+    await startUserSession(req, verificationResult.email)
 
     return res.status(200).json({
       success: true,

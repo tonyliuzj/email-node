@@ -807,6 +807,8 @@ prompt_common_settings() {
   echo "Session password generated."
   DATA_KEY="$(openssl rand -base64 32)"
   echo "Data encryption key generated."
+  SETUP_TOKEN="$(openssl rand -hex 16)"
+  echo "Setup token generated."
 
   read -p "Port to expose the app on (default 3000): " HOST_PORT
   HOST_PORT="${HOST_PORT:-3000}"
@@ -823,6 +825,9 @@ SESSION_PASSWORD=$SESSION_PASS
 
 # Secret used to encrypt stored IMAP and Turnstile secrets
 DATA_ENCRYPTION_KEY=$DATA_KEY
+
+# The first-run setup page asks for this, so only someone who can read this file can create the admin
+SETUP_TOKEN=$SETUP_TOKEN
 
 # Trust the host header behind reverse proxies and custom domains
 AUTH_TRUST_HOST=true
@@ -846,6 +851,9 @@ SESSION_PASSWORD=$SESSION_PASS
 
 # Secret used to encrypt stored IMAP and Turnstile secrets
 DATA_ENCRYPTION_KEY=$DATA_KEY
+
+# The first-run setup page asks for this, so only someone who can read this file can create the admin
+SETUP_TOKEN=$SETUP_TOKEN
 
 # Trust the host header behind reverse proxies and custom domains
 AUTH_TRUST_HOST=true
@@ -940,6 +948,16 @@ stop_and_remove_service() {
   fi
 }
 
+# Browsers refuse to keep a Secure cookie that arrives over plain HTTP, except on localhost.
+print_access_notes() {
+  echo
+  echo "Open the app over HTTPS if you can (for example behind a reverse proxy)."
+  echo "If you will use plain http:// with a server address instead of localhost, browsers drop the"
+  echo "session cookie and nobody can stay signed in. In that case add this line to"
+  echo "${INSTALL_DIR}/${APP_ENV_FILE} and restart the app:"
+  echo "  SESSION_COOKIE_SECURE=false"
+}
+
 # ============================================================
 # Direct deployment actions
 # ============================================================
@@ -956,6 +974,7 @@ install_direct() {
   echo
   echo ".env file created: ${INSTALL_DIR}/${APP_ENV_FILE}"
   echo "Complete setup at: http://localhost:$HOST_PORT/setup"
+  echo "Setup token (the setup page asks for it): $SETUP_TOKEN"
 
   install_project_dependencies
 
@@ -971,6 +990,7 @@ install_direct() {
   echo "Visit: http://localhost:$HOST_PORT"
   echo "View logs: sudo journalctl -u $SERVICE_NAME -f"
   echo "Service status: sudo systemctl status $SERVICE_NAME"
+  print_access_notes
 }
 
 update_direct() {
@@ -1078,6 +1098,7 @@ install_docker_mode() {
   echo "- ${INSTALL_DIR}/${APP_ENV_FILE}"
   echo "- ${INSTALL_DIR}/${COMPOSE_ENV_FILE}"
   echo "Complete setup at: http://localhost:$HOST_PORT/setup"
+  echo "Setup token (the setup page asks for it): $SETUP_TOKEN"
 
   step "Creating data directory..."
   mkdir -p "${INSTALL_DIR}/data"
@@ -1092,6 +1113,7 @@ install_docker_mode() {
   echo "Visit: http://localhost:$HOST_PORT"
   echo "View logs: sudo docker compose logs -f"
   echo "Container status: sudo docker compose ps"
+  print_access_notes
 }
 
 update_docker_mode() {

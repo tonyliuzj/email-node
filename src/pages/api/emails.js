@@ -1,9 +1,11 @@
 import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
-import { getDomainForImap, getUserEmailByAddress } from '../../lib/db.js'
+import { getDomainForImap } from '../../lib/db.js'
 import { withSessionRoute } from '../../lib/session.js'
+import { getSessionEmail } from '../../lib/session-auth.js'
 import { protectMutation } from '../../lib/security.js'
 import { sanitizeEmailHtml } from '../../lib/email-sanitizer.js'
+import { isAddressedTo } from '../../lib/recipients.js'
 import { normalizeEmailAddress } from '../../lib/validation.js'
 
 const MAX_MESSAGES = 50
@@ -40,6 +42,19 @@ function formatAddressList(addressList) {
   return senderName || emailAddress || addressList?.text || ''
 }
 
+// Candidate messages only: IMAP header search matches substrings ("a@x.com" also matches "ba@x.com"),
+// so every result is checked against its exact recipients after it is parsed.
+function recipientQuery(address) {
+  return {
+    or: [
+      { header: { to: address } },
+      { header: { cc: address } },
+      { header: { 'delivered-to': address } },
+      { header: { 'x-original-to': address } },
+    ],
+  }
+}
+
 async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST'])
@@ -50,22 +65,15 @@ async function handler(req, res) {
     return
   }
 
-  // Get user data from iron-session
-  const userEmail = req.session.get('email')
-  
+  const userEmail = await getSessionEmail(req)
+
   if (!userEmail) {
     return res.status(401).json({ error: 'Unauthorized: No session found' })
   }
 
-  const requestedAddress = normalizeEmailAddress(req.body?.email)
-  if (!requestedAddress) {
-    return res.status(400).json({ error: 'Email is required' })
-  }
-
-  // Verify the email belongs to the authenticated user
-  const requestedEmail = getUserEmailByAddress(requestedAddress)
-  const userEmailId = userEmail.id || userEmail.email_id
-  if (!requestedEmail || requestedEmail.id !== userEmailId) {
+  // Only the signed-in address can be read. The request may name it, but not choose another one.
+  const requestedAddress = normalizeEmailAddress(req.body?.email) || userEmail.email_address
+  if (requestedAddress !== userEmail.email_address) {
     return res.status(403).json({ error: 'Unauthorized access to this email' })
   }
 
@@ -116,7 +124,7 @@ async function handler(req, res) {
     let rawMessages = []
     try {
       const uids = await withTimeout(
-        client.search({ header: { to: requestedAddress } }, { uid: true }),
+        client.search(recipientQuery(requestedAddress), { uid: true }),
         MAILBOX_OPERATION_TIMEOUT_MS,
         'Timed out searching mailbox.',
         closeClient
@@ -151,6 +159,7 @@ async function handler(req, res) {
       rawMessages.map(async ({ uid, buffer }) => {
         try {
           const parsed = await simpleParser(buffer)
+          if (!isAddressedTo(parsed, requestedAddress)) return null
           return {
             uid,
             subject: parsed.subject,
@@ -167,7 +176,7 @@ async function handler(req, res) {
     )
 
     const validEmails = emails.filter(Boolean)
-    validEmails.sort((a, b) => new Date(b.date) - new Date(a.date))
+    validEmails.sort((a, b) => (b.date ? +new Date(b.date) : 0) - (a.date ? +new Date(a.date) : 0))
     
     res.status(200).json({ emails: validEmails })
   } catch (error) {

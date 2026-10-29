@@ -72,7 +72,8 @@ export const getServerSideProps = withSessionSsr(async ({ req, params }) => {
     return { notFound: true }
   }
 
-  const admin = req.session.get('admin')
+  const { getSessionAdmin } = await import('../../lib/session-auth')
+  const admin = getSessionAdmin(req)
   if (!admin) {
     return {
       redirect: {
@@ -348,7 +349,7 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
   }
 
   const deleteDomain = async (id) => {
-    if (confirm('Are you sure you want to delete this domain?')) {
+    if (confirm('Delete this domain? Any inbox addresses on it will be deleted too.')) {
       const res = await fetch(`/api/${adminPath}/domains`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },

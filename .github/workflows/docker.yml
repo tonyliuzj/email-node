@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   check:
-    name: Lint and typecheck
+    name: Lint, typecheck and test
     runs-on: ubuntu-latest
 
     steps:
@@ -33,6 +33,9 @@ jobs:
 
       - name: Typecheck
         run: npx tsc --noEmit
+
+      - name: Test
+        run: npm test
 
   docker:
     name: Build and push to Docker Hub

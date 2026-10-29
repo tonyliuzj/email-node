@@ -11,6 +11,7 @@ import {
   setTurnstileConfig,
 } from '../../../lib/db'
 import { protectMutation } from '../../../lib/security'
+import { requireAdmin } from '../../../lib/session-auth'
 
 function normalizeBoolean(value) {
   if (typeof value === 'boolean') return value
@@ -27,10 +28,7 @@ export default withSessionSsr(async function handler(req, res) {
     return res.status(404).json({ error: 'Not found' })
   }
 
-  const admin = req.session.get('admin')
-  if (!admin) {
-    return res.status(401).json({ error: 'Unauthorized' })
-  }
+  if (!requireAdmin(req, res)) return
 
   try {
     if (req.method === 'GET') {

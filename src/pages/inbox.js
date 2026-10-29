@@ -132,6 +132,8 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
   const fetchEmails = useCallback(async () => {
     if (userEmails.length === 0) return;
     if (isFetchingRef.current) return;
+    // Every refresh opens an IMAP connection on the server, so don't poll from a hidden tab.
+    if (typeof document !== 'undefined' && document.hidden) return;
     
     const primaryEmail = userEmails[0];
     if (!primaryEmail) return;
@@ -146,6 +148,10 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
         body: JSON.stringify({ email: primaryEmail.email_address }),
         credentials: 'include',
       });
+      if (res.status === 401 || res.status === 403) {
+        router.push('/');
+        return;
+      }
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Mailbox sync failed.');
@@ -162,30 +168,38 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
       if (newOnes.length) setInbox(prev => [...newOnes, ...prev]);
     } catch (err) {
       console.error(err);
-      toast.error(err.message || 'Mailbox sync failed.');
+      toast.error(err.message || 'Mailbox sync failed.', { id: 'mailbox-sync-error' });
     } finally {
       isFetchingRef.current = false;
       setIsRefreshing(false);
       setCountdown(refreshSeconds);
     }
-  }, [refreshSeconds, userEmails]);
+  }, [refreshSeconds, userEmails, router]);
 
   useEffect(() => {
     let timer;
+    const onVisible = () => {
+      if (!document.hidden) fetchEmails();
+    };
+
     if (userEmails.length > 0) {
       fetchEmails();
       setCountdown(refreshSeconds);
+      let remaining = refreshSeconds;
       timer = setInterval(() => {
-        setCountdown(c => {
-          if (c <= 1) {
-            fetchEmails();
-            return refreshSeconds;
-          }
-          return c - 1;
-        });
+        remaining -= 1;
+        if (remaining <= 0) {
+          remaining = refreshSeconds;
+          fetchEmails();
+        }
+        setCountdown(remaining);
       }, 1000);
+      document.addEventListener('visibilitychange', onVisible);
     }
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [refreshSeconds, userEmails, fetchEmails]);
 
   const getSnippet = text => {

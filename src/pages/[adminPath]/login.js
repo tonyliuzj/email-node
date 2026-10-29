@@ -25,7 +25,8 @@ export const getServerSideProps = withSessionSsr(async ({ req, params }) => {
   if (!params || params.adminPath !== currentAdminPath) {
     return { notFound: true }
   }
-  const admin = req.session.get('admin')
+  const { getSessionAdmin } = await import('../../lib/session-auth')
+  const admin = getSessionAdmin(req)
   if (admin) {
     return {
       redirect: {

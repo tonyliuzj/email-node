@@ -22,7 +22,9 @@ A modern, self-hosted IMAP webmail UI with an inbox address system. Email Node d
   - Session-based authentication with iron-session
   - Bcrypt password hashing for admin and user passkeys
   - Passkey regeneration with manual masking controls
+  - Changing a passkey or the admin password signs out every other device
   - Optional Cloudflare Turnstile CAPTCHA for address creation and login
+  - Optional setup token so only you can create the first admin account
 
 - **Admin Panel**
   - First-run setup page for creating the initial admin user
@@ -95,6 +97,12 @@ Replace the placeholder `SESSION_PASSWORD` and `DATA_ENCRYPTION_KEY` values in `
 ```bash
 openssl rand -base64 32
 ```
+
+Also add a setup token, so nobody else can create the admin account before you do:
+```bash
+echo "SETUP_TOKEN=$(openssl rand -hex 16)" >> .env.local
+```
+The setup page asks for it; read it back from `.env.local`.
 
 3. **Start the app**
 ```bash
@@ -174,6 +182,8 @@ Add and manage multiple domains in the admin panel:
 **First-run admin setup:**
 Fresh installs start without an admin account. Visit `/setup` to create the first admin user; after setup completes, `/setup` redirects to the admin login page.
 
+Until setup is finished, whoever reaches `/setup` first becomes the admin. The installer therefore generates a `SETUP_TOKEN`, prints it, and stores it in `.env.local`; the setup page asks for it. If you set up manually, add a `SETUP_TOKEN` (any long random string) to `.env.local` before exposing the app. Without one, setup is open to the first visitor.
+
 ---
 
 ## Project Structure
@@ -207,9 +217,14 @@ src/
 │       └── info.js                 # Get public site info
 ├── lib/
 │   ├── db.js                       # SQLite database & schema
-│   ├── session.js                  # Admin session management
-│   ├── user-session.js             # User session management
-│   ├── user-auth.js                # User authentication helpers
+│   ├── session.js                  # iron-session cookie configuration
+│   ├── session-auth.js             # Checks session cookies against the database
+│   ├── user-auth.js                # Page and route wrappers for signed-in users
+│   ├── security.js                 # Client IP, rate limits, same-origin checks, setup token
+│   ├── recipients.js               # Exact recipient matching for IMAP results
+│   ├── validation.js               # Input normalisation
+│   ├── email-sanitizer.js          # HTML sanitising for message bodies
+│   ├── secret-store.js             # Encryption for stored secrets
 │   └── turnstile.js                # Turnstile verification
 ├── components/
 │   ├── app-shell.js                # Shared app shell built with shadcn/ui
@@ -222,6 +237,7 @@ data/
 Dockerfile                          # Production container image
 docker-compose.yml                  # Docker Compose deployment
 email-node.sh                       # Interactive direct/Docker installer
+tests/                              # Automated tests (npm test)
 ```
 
 ### Key Components
@@ -318,6 +334,9 @@ Most configuration is done through the admin panel. Environment variables:
 - `DATA_ENCRYPTION_KEY` - Secret used to encrypt stored IMAP and Turnstile secrets. If omitted, the app falls back to `SESSION_PASSWORD`. Keep it unchanged once secrets are stored: a different key cannot decrypt them. When the installer adds a missing key during an update, it copies the current `SESSION_PASSWORD` so existing secrets keep working.
 - `DATABASE_URL` - SQLite file path, absolute or relative to the working directory. Defaults to `data/temp-mail.db` (`/app/data/temp-mail.db` in Docker).
 - `PORT` - Port used by the Next.js server.
+- `SETUP_TOKEN` - Required on the first-run setup page when set. The installer generates one. It has no effect once an admin exists.
+- `SESSION_COOKIE_SECURE` - Session cookies are `Secure` in production, so browsers only keep them over HTTPS (or on `localhost`). Set this to `false` only if you open the app over plain `http://` with a server address; HTTPS is strongly preferred.
+- `TRUST_PROXY_HEADERS` - Client IPs (used for rate limiting) are read from `CF-Connecting-IP`, `X-Real-IP` or the last `X-Forwarded-For` entry. Set this to `false` if the app is reachable directly, without a proxy that sets one of them, so a client cannot forge its address.
 - `HOST_PORT` - Host port used by Docker Compose.
 - `CONTAINER_PORT` - Container port used by Docker Compose.
 - `DOCKER_IMAGE` - Docker image used by Docker Compose and the installer.
@@ -331,8 +350,13 @@ Most configuration is done through the admin panel. Environment variables:
 - **Secure passkey management** with regeneration and manual masking controls
 - **Optional CAPTCHA protection** via Cloudflare Turnstile for address creation and login
 - **Encrypted stored secrets** for IMAP passwords and Turnstile secret keys
-- **Same-origin checks and rate limits** on mutating API routes
-- **Secure cookie settings** with httpOnly and secure flags
+- **Same-origin checks and rate limits** on mutating API routes. Limits are keyed on a client IP that a visitor cannot forge through `X-Forwarded-For`, and IPv6 clients share a limit per /64.
+- **Exact inbox isolation**: IMAP header search matches substrings, so every message is checked against its real recipients before it is shown. `a@example.com` never sees mail for `ba@example.com`.
+- **Sessions are checked against the database** on every request. Regenerating a passkey, changing the admin password or username, or deleting an address signs out all other sessions.
+- **Constant-time logins**: an unknown address or admin username takes as long to reject as a wrong password.
+- **Setup protection** with an optional `SETUP_TOKEN`, so a freshly deployed server cannot be claimed by whoever finds it first.
+- **Reserved admin paths**: the admin path cannot be set to a name such as `inbox` or `setup`, which would make the dashboard unreachable.
+- **Secure cookie settings** with httpOnly, sameSite=strict and secure flags, plus an HSTS header in production.
 
 ---
 
@@ -344,6 +368,20 @@ Most configuration is done through the admin panel. Environment variables:
 - **Smooth Animations** - Polished transitions and loading states
 - **Accessible UI** - Keyboard navigation and screen reader support
 - **Copy to Clipboard** - One-click copying of email addresses and passkeys
+- **Delete Address** - Remove your address, passkey and sign-in from the account page
+
+---
+
+## Development
+
+```bash
+npm run dev      # start the dev server
+npm test         # automated tests (Node's built-in test runner, uses a temporary SQLite database)
+npm run lint
+npx tsc --noEmit
+```
+
+GitHub Actions runs lint, type checking and the tests before every Docker image publish, and on pull requests. Tests need Node.js 22.7 or newer.
 
 ---
 

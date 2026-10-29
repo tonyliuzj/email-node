@@ -1,8 +1,19 @@
 import { withSessionSsr } from '../../../lib/session'
-import { db, getAdminDomains, getAdminPath } from '../../../lib/db'
+import {
+  countAddressesForDomain,
+  db,
+  deleteDomainWithAddresses,
+  getAdminDomains,
+  getAdminPath,
+} from '../../../lib/db'
 import { protectMutation } from '../../../lib/security'
+import { requireAdmin } from '../../../lib/session-auth'
 import { encryptSecret } from '../../../lib/secret-store'
 import { normalizeDomainName, normalizeHost, normalizePort } from '../../../lib/validation'
+
+function isDuplicateError(error) {
+  return error?.code === 'SQLITE_CONSTRAINT_UNIQUE'
+}
 
 export default withSessionSsr(async function handler(req, res) {
   const { adminPath } = req.query
@@ -10,17 +21,14 @@ export default withSessionSsr(async function handler(req, res) {
     return res.status(404).json({ error: 'Not found' })
   }
 
-  const admin = req.session.get('admin')
-  if (!admin) {
-    return res.status(401).json({ error: 'Unauthorized' })
-  }
+  if (!requireAdmin(req, res)) return
 
   try {
     switch (req.method) {
       case 'GET':
         return res.status(200).json(getAdminDomains())
 
-      case 'POST':
+      case 'POST': {
         if (!protectMutation(req, res, { key: 'admin-write', max: 30, windowMs: 60 * 1000 })) {
           return
         }
@@ -36,25 +44,34 @@ export default withSessionSsr(async function handler(req, res) {
           return res.status(400).json({ error: 'Valid domain, IMAP host, port, user, and password are required' })
         }
 
-        const result = db
-          .prepare(
-            `INSERT INTO domains (
-              name, imap_host, imap_port, imap_user, imap_password, imap_tls, is_active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)`
-          )
-          .run(
-            normalizedName,
-            normalizedHost,
-            normalizedPort,
-            normalizedUser,
-            encryptSecret(normalizedPassword),
-            imap_tls ? 1 : 0,
-            typeof is_active === 'undefined' ? 1 : is_active ? 1 : 0
-          )
+        let result
+        try {
+          result = db
+            .prepare(
+              `INSERT INTO domains (
+                name, imap_host, imap_port, imap_user, imap_password, imap_tls, is_active
+              ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+            )
+            .run(
+              normalizedName,
+              normalizedHost,
+              normalizedPort,
+              normalizedUser,
+              encryptSecret(normalizedPassword),
+              typeof imap_tls === 'undefined' ? 1 : imap_tls ? 1 : 0,
+              typeof is_active === 'undefined' ? 1 : is_active ? 1 : 0
+            )
+        } catch (error) {
+          if (isDuplicateError(error)) {
+            return res.status(409).json({ error: 'That domain is already configured' })
+          }
+          throw error
+        }
 
         return res.status(201).json({ id: result.lastInsertRowid })
+      }
 
-      case 'PUT':
+      case 'PUT': {
         if (!protectMutation(req, res, { key: 'admin-write', max: 30, windowMs: 60 * 1000 })) {
           return
         }
@@ -80,35 +97,54 @@ export default withSessionSsr(async function handler(req, res) {
           return res.status(400).json({ error: 'Valid domain, IMAP host, port, and user are required' })
         }
 
-        const updateResult = db
-          .prepare(
-            `UPDATE domains SET
-              name = ?,
-              imap_host = ?,
-              imap_port = ?,
-              imap_user = ?,
-              imap_password = ?,
-              imap_tls = ?,
-              is_active = ?
-            WHERE id = ?`
-          )
-          .run(
-            updateName,
-            updateHost,
-            updatePort,
-            updateUser,
-            updatePassword ? encryptSecret(updatePassword) : existingDomain.imap_password || '',
-            updateData.imap_tls ? 1 : 0,
-            updateData.is_active ? 1 : 0,
-            domainId
-          )
+        // Addresses store the domain they were created on, so renaming it would orphan them.
+        if (updateName !== existingDomain.name) {
+          const addressCount = countAddressesForDomain(existingDomain.name)
+          if (addressCount > 0) {
+            return res.status(409).json({
+              error: `${addressCount} address${addressCount === 1 ? '' : 'es'} use this domain, so it cannot be renamed. Add the new domain instead and deactivate this one.`,
+            })
+          }
+        }
+
+        let updateResult
+        try {
+          updateResult = db
+            .prepare(
+              `UPDATE domains SET
+                name = ?,
+                imap_host = ?,
+                imap_port = ?,
+                imap_user = ?,
+                imap_password = ?,
+                imap_tls = ?,
+                is_active = ?
+              WHERE id = ?`
+            )
+            .run(
+              updateName,
+              updateHost,
+              updatePort,
+              updateUser,
+              updatePassword ? encryptSecret(updatePassword) : existingDomain.imap_password || '',
+              typeof updateData.imap_tls === 'undefined' ? existingDomain.imap_tls : updateData.imap_tls ? 1 : 0,
+              typeof updateData.is_active === 'undefined' ? existingDomain.is_active : updateData.is_active ? 1 : 0,
+              domainId
+            )
+        } catch (error) {
+          if (isDuplicateError(error)) {
+            return res.status(409).json({ error: 'That domain is already configured' })
+          }
+          throw error
+        }
 
         if (updateResult.changes === 0) {
           return res.status(404).json({ error: 'Domain not found' })
         }
         return res.status(200).json({ success: true })
+      }
 
-      case 'DELETE':
+      case 'DELETE': {
         if (!protectMutation(req, res, { key: 'admin-write', max: 30, windowMs: 60 * 1000 })) {
           return
         }
@@ -118,11 +154,12 @@ export default withSessionSsr(async function handler(req, res) {
           return res.status(400).json({ error: 'Domain ID is required' })
         }
 
-        const deleteResult = db.prepare('DELETE FROM domains WHERE id = ?').run(deleteId)
-        if (deleteResult.changes === 0) {
+        const deleted = deleteDomainWithAddresses(deleteId)
+        if (!deleted) {
           return res.status(404).json({ error: 'Domain not found' })
         }
-        return res.status(200).json({ success: true })
+        return res.status(200).json({ success: true, removedAddresses: deleted.removedAddresses })
+      }
 
       default:
         res.setHeader('Allow', ['GET', 'POST', 'PUT', 'DELETE'])

@@ -1,5 +1,4 @@
 import { getIronSession } from 'iron-session'
-import { serialize, parse } from 'cookie'
 
 function getSessionPassword() {
   if (!process.env.SESSION_PASSWORD) {
@@ -20,7 +19,11 @@ const sessionOptions = {
   ttl: 7 * 24 * 60 * 60,
   cookieOptions: {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    // Browsers drop Secure cookies on plain HTTP (except on localhost), so nobody could stay signed in at
+    // http://<server-ip>:3000. Serve the app over HTTPS when you can; otherwise set SESSION_COOKIE_SECURE=false.
+    secure: process.env.SESSION_COOKIE_SECURE
+      ? process.env.SESSION_COOKIE_SECURE !== 'false'
+      : process.env.NODE_ENV === 'production',
     sameSite: 'strict',
     path: '/',
   },
@@ -48,18 +51,6 @@ function attachSessionCompat(session) {
 async function loadSession(req, res) {
   const session = await getIronSession(req, res, sessionOptions)
   return attachSessionCompat(session)
-}
-
-export function getSessionCookie(req) {
-  const cookies = parse(req.headers.cookie || '')
-  return cookies[sessionOptions.cookieName]
-}
-
-export function clearSessionCookie() {
-  return serialize(sessionOptions.cookieName, '', {
-    maxAge: -1,
-    path: '/',
-  })
 }
 
 export function withSessionRoute(handler) {

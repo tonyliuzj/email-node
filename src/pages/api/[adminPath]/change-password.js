@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs'
 import { withSessionRoute } from '../../../lib/session'
 import { getAdmin, getAdminPath, updateAdminPassword } from '../../../lib/db'
+import { requireAdmin, startAdminSession } from '../../../lib/session-auth'
 import { protectMutation } from '../../../lib/security'
 
 export default withSessionRoute(async (req, res) => {
@@ -9,10 +10,8 @@ export default withSessionRoute(async (req, res) => {
     return res.status(404).json({ error: 'Not found' })
   }
 
-  const admin = req.session.get('admin')
-  if (!admin) {
-    return res.status(401).json({ error: 'Not authenticated' })
-  }
+  const admin = requireAdmin(req, res)
+  if (!admin) return
 
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST'])
@@ -24,7 +23,7 @@ export default withSessionRoute(async (req, res) => {
   }
 
   const { currentPassword, newPassword } = req.body || {}
-  if (!currentPassword || !newPassword) {
+  if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || !currentPassword || !newPassword) {
     return res.status(400).json({ error: 'Current password and new password are required' })
   }
 
@@ -37,6 +36,9 @@ export default withSessionRoute(async (req, res) => {
   if (!result.success) {
     return res.status(400).json({ error: result.error || 'Unable to update password' })
   }
+
+  // The new password signs every other session out; keep this one signed in.
+  await startAdminSession(req, getAdmin(admin.username))
 
   return res.status(200).json({ ok: true })
 })

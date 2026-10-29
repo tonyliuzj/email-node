@@ -1,9 +1,10 @@
 import { withSessionRoute, withSessionSsr } from './session.js'
+import { getSessionEmail } from './session-auth.js'
 
 export function withUserAuth(handler) {
   return withSessionRoute(async function(req, res) {
     try {
-      const user = req.session.get('email')
+      const user = await getSessionEmail(req)
       if (!user) {
         return res.status(401).json({ error: 'Invalid or expired session' })
       }
@@ -20,7 +21,7 @@ export function withUserAuth(handler) {
 export function withUser(handler) {
   return withSessionSsr(async function(context) {
     const { req } = context;
-    context.user = req.session.get('email') || null;
+    context.user = await getSessionEmail(req);
     return handler(context);
   });
 }

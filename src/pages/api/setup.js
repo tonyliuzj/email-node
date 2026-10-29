@@ -1,6 +1,7 @@
 import { withSessionRoute } from '../../lib/session'
-import { createInitialAdmin, getAdminPath, isSetupRequired } from '../../lib/db'
-import { protectMutation } from '../../lib/security'
+import { createInitialAdmin, getAdmin, getAdminPath, isSetupRequired } from '../../lib/db'
+import { isSetupTokenValid, protectMutation } from '../../lib/security'
+import { startAdminSession } from '../../lib/session-auth'
 
 export default withSessionRoute(async (req, res) => {
   if (req.method !== 'POST') {
@@ -16,7 +17,12 @@ export default withSessionRoute(async (req, res) => {
     return res.status(409).json({ error: 'Setup has already been completed.' })
   }
 
-  const { username, password, confirmPassword } = req.body || {}
+  const { username, password, confirmPassword, setupToken } = req.body || {}
+
+  if (!isSetupTokenValid(setupToken)) {
+    return res.status(403).json({ error: 'The setup token is missing or incorrect.' })
+  }
+
   if (password !== confirmPassword) {
     return res.status(400).json({ error: 'Passwords do not match.' })
   }
@@ -26,8 +32,7 @@ export default withSessionRoute(async (req, res) => {
     return res.status(400).json({ error: result.error })
   }
 
-  req.session.set('admin', { username: result.username })
-  await req.session.save()
+  await startAdminSession(req, getAdmin(result.username))
 
   return res.status(200).json({
     ok: true,

@@ -87,17 +87,6 @@ db.prepare(`
   )
 `).run()
 
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS sessions (
-    id INTEGER PRIMARY KEY,
-    email_id INTEGER NOT NULL,
-    session_token TEXT UNIQUE NOT NULL,
-    expires_at DATETIME NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (email_id) REFERENCES emails (id) ON DELETE CASCADE
-  )
-`).run()
-
 function migrateStoredSecrets() {
   const turnstileSecret = db.prepare('SELECT value FROM settings WHERE key = ?').get('turnstile_secret_key')
   if (turnstileSecret?.value && !isEncryptedSecret(turnstileSecret.value)) {
@@ -118,6 +107,12 @@ function migrateStoredSecrets() {
 }
 
 migrateStoredSecrets()
+
+// Older versions saved admin usernames exactly as typed, but lookups trim them, so a name with stray
+// spaces could never log in again.
+db.prepare('UPDATE admin SET username = TRIM(username) WHERE username != TRIM(username)').run()
+
+const TIMING_HASH = bcrypt.hashSync('timing-placeholder', 10)
 
 export function isSetupRequired() {
   const row = db.prepare('SELECT COUNT(*) as count FROM admin').get()
@@ -182,9 +177,22 @@ export function setAdminPath(newPath) {
 }
 
 export function updateAdminUsername(oldUsername, newUsername) {
-  return db
-    .prepare('UPDATE admin SET username = ? WHERE username = ?')
-    .run(newUsername, oldUsername)
+  const username = String(newUsername || '').trim()
+  if (username.length < 3) {
+    return { success: false, error: 'Username must be at least 3 characters.' }
+  }
+
+  try {
+    const result = db
+      .prepare('UPDATE admin SET username = ? WHERE username = ?')
+      .run(username, oldUsername)
+    return { success: result.changes > 0, username }
+  } catch (error) {
+    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return { success: false, error: 'Username already exists.' }
+    }
+    throw error
+  }
 }
 
 export function getFirstActiveDomain() {
@@ -340,10 +348,11 @@ export function getEmailByAddress(emailAddress) {
 export function verifyEmail(emailAddress, passkey) {
   const email = getEmailByAddress(emailAddress);
   if (!email) {
+    spendPasswordCheckTime(passkey);
     return { success: false, error: 'Email address not found' };
   }
 
-  const isValid = bcrypt.compareSync(passkey, email.passkey_hash);
+  const isValid = typeof passkey === 'string' && bcrypt.compareSync(passkey, email.passkey_hash);
   if (!isValid) {
     return { success: false, error: 'Invalid passkey' };
   }
@@ -359,43 +368,6 @@ export function regeneratePasskey(emailId, newPasskey) {
 
 export function deleteEmail(emailId) {
   const result = db.prepare('DELETE FROM emails WHERE id = ?').run(emailId);
-  return result.changes > 0;
-}
-
-export function createSession(emailId, sessionToken, expiresAt) {
-  try {
-    const expiresAtTimestamp = expiresAt instanceof Date ? Math.floor(expiresAt.getTime() / 1000) : expiresAt;
-    const result = db.prepare(`
-      INSERT INTO sessions (email_id, session_token, expires_at)
-      VALUES (?, ?, ?)
-    `).run(emailId, sessionToken, expiresAtTimestamp);
-    return { success: true, sessionId: result.lastInsertRowid };
-  } catch (error) {
-    console.error('Failed to create session:', error);
-    return { success: false, error: 'Failed to create session' };
-  }
-}
-
-export function getSession(sessionToken) {
-  const session = db.prepare('SELECT * FROM sessions WHERE session_token = ?').get(sessionToken);
-  if (!session) return null;
-
-  const now = Math.floor(Date.now() / 1000);
-  if (session.expires_at < now) {
-    db.prepare('DELETE FROM sessions WHERE id = ?').run(session.id);
-    return null;
-  }
-
-  return session;
-}
-
-export function deleteSession(sessionToken) {
-  const result = db.prepare('DELETE FROM sessions WHERE session_token = ?').run(sessionToken);
-  return result.changes > 0;
-}
-
-export function deleteSessions(emailId) {
-  const result = db.prepare('DELETE FROM sessions WHERE email_id = ?').run(emailId);
   return result.changes > 0;
 }
 
@@ -427,14 +399,8 @@ export function getDomainForImap(domainName) {
   }
 }
 
-export function toSafeSessionEmail(email) {
-  if (!email) return null
-  return {
-    id: email.id || email.email_id,
-    email_id: email.id || email.email_id,
-    email_address: email.email_address,
-    domain_name: email.domain_name,
-  }
+export function getEmailById(emailId) {
+  return db.prepare('SELECT * FROM emails WHERE id = ?').get(emailId)
 }
 
 export function getPublicDomains() {
@@ -453,49 +419,29 @@ export function getAdminDomains() {
   }))
 }
 
-// Missing functions needed by the emails API
-export function getUserSession(sessionToken) {
-  const session = getSession(sessionToken);
-  if (!session) return null;
-  
-  // Adapt the session to include user_id (using email_id as user_id)
-  return {
-    ...session,
-    user_id: session.email_id
-  };
+export function countAddressesForDomain(domainName) {
+  const row = db.prepare('SELECT COUNT(*) AS count FROM emails WHERE domain_name = ?').get(domainName)
+  return Number(row?.count || 0)
 }
 
-export function getUserEmailByAddress(emailAddress) {
-  const email = getEmailByAddress(emailAddress);
-  if (!email) return null;
-  
-  // Adapt the email object to include user_id and domain_id
-  // For this simple system, the email id serves as the user_id
-  return {
-    ...email,
-    user_id: email.id,
-    domain_id: 1 // Default domain ID - you may need to map this properly based on domain_name
-  };
-}
+// Addresses on a removed domain can no longer fetch mail, so they are removed with it.
+export function deleteDomainWithAddresses(domainId) {
+  const remove = db.transaction(id => {
+    const domain = db.prepare('SELECT name FROM domains WHERE id = ?').get(id)
+    if (!domain) return null
 
-export function getConfig() {
-  const rows = db.prepare('SELECT key, value FROM settings').all()
-  return rows.reduce((acc, row) => {
-    acc[row.key] = row.value
-    return acc
-  }, {})
-}
-
-export function updateConfig(config) {
-  const stmt = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
-  const update = db.transaction((cfg) => {
-    for (const [key, value] of Object.entries(cfg)) {
-      stmt.run(key, String(value))
-    }
+    const removed = db.prepare('DELETE FROM emails WHERE domain_name = ?').run(domain.name)
+    db.prepare('DELETE FROM domains WHERE id = ?').run(id)
+    return { removedAddresses: removed.changes }
   })
-  update(config)
+
+  return remove(domainId)
 }
 
-export const createUserSession = createSession
+// Checks a secret against a throwaway hash so a failed lookup takes as long as a real check instead of
+// revealing whether the account exists.
+export function spendPasswordCheckTime(secret) {
+  bcrypt.compareSync(typeof secret === 'string' ? secret : '', TIMING_HASH)
+}
 
 export { db }

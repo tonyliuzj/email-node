@@ -1,10 +1,13 @@
-import { createEmail, getActiveDomainByName, getFirstActiveDomain, toSafeSessionEmail } from '../../../lib/db.js';
+import { createEmail, getActiveDomainByName, getEmailById } from '../../../lib/db.js';
 import { withSessionRoute } from '../../../lib/session.js';
+import { startUserSession } from '../../../lib/session-auth.js';
 import { generate as randomWords } from 'random-words';
 import { nanoid } from 'nanoid';
 import { isTurnstileEnabled, verifyTurnstileToken, getClientIp } from '../../../lib/turnstile.js';
 import { protectMutation } from '../../../lib/security.js';
 import { buildEmailAddress, normalizeEmailAddress, normalizeEmailLocalPart, normalizeDomainName } from '../../../lib/validation.js';
+
+const RANDOM_ADDRESS_ATTEMPTS = 5
 
 async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -19,7 +22,7 @@ async function handler(req, res) {
 
     const { userEmail, emailType, customEmail, domainName, turnstileToken } = req.body || {}
 
-    
+
     if (isTurnstileEnabled('registration')) {
       const verification = await verifyTurnstileToken(turnstileToken, getClientIp(req));
       if (!verification.success) {
@@ -28,61 +31,55 @@ async function handler(req, res) {
       }
     }
 
-    
+
     if (!emailType || !domainName) {
       return res.status(400).json({ error: 'Missing required fields' })
     }
 
-    
-    let emailAddress;
-    let selectedDomainName = normalizeDomainName(domainName)
+
+    const selectedDomainName = normalizeDomainName(domainName)
     const activeDomain = getActiveDomainByName(selectedDomainName)
     if (!activeDomain) {
       return res.status(400).json({ error: 'Invalid or inactive domain' })
     }
-    selectedDomainName = activeDomain.name
+
+    const passkey = nanoid(24);
+    let emailAddress;
+    let emailResult;
 
     if (emailType === 'random') {
-      const randomAlias = randomWords({ exactly: 2, join: '.' });
-      const domain = getFirstActiveDomain();
-      emailAddress = `${randomAlias}@${domain.name}`;
-      selectedDomainName = domain.name
+      // Random aliases can collide with an existing address, so try a few before giving up.
+      for (let attempt = 0; attempt < RANDOM_ADDRESS_ATTEMPTS; attempt += 1) {
+        emailAddress = `${randomWords({ exactly: 2, join: '.' })}@${activeDomain.name}`;
+        emailResult = createEmail(emailAddress, passkey, activeDomain.name);
+        if (emailResult.success || emailResult.error !== 'Email address already taken') break;
+      }
     } else if (emailType === 'custom') {
       if (!customEmail) {
         return res.status(400).json({ error: 'Custom email address is required' });
       }
       emailAddress = normalizeEmailAddress(customEmail);
-      if (!emailAddress || !emailAddress.endsWith(`@${selectedDomainName}`)) {
+      if (!emailAddress || !emailAddress.endsWith(`@${activeDomain.name}`)) {
         return res.status(400).json({ error: 'Invalid email address' });
       }
+      emailResult = createEmail(emailAddress, passkey, activeDomain.name);
     } else if (emailType === 'username') {
       const localPart = normalizeEmailLocalPart(userEmail)
       if (!localPart) {
         return res.status(400).json({ error: 'Invalid username format' });
       }
-      
-      emailAddress = buildEmailAddress(localPart, selectedDomainName);
+
+      emailAddress = buildEmailAddress(localPart, activeDomain.name);
+      emailResult = createEmail(emailAddress, passkey, activeDomain.name);
     } else {
       return res.status(400).json({ error: 'Invalid email type' });
     }
 
-    
-    const passkey = nanoid(24);
-
-    
-    const emailResult = createEmail(emailAddress, passkey, selectedDomainName);
     if (!emailResult.success) {
       return res.status(400).json({ error: emailResult.error });
     }
 
-    
-    req.session.set('email', toSafeSessionEmail({
-      email_id: emailResult.emailId,
-      id: emailResult.emailId,
-      email_address: emailAddress,
-      domain_name: selectedDomainName,
-    }));
-    await req.session.save();
+    await startUserSession(req, getEmailById(emailResult.emailId));
 
     return res.status(201).json({
       success: true,
