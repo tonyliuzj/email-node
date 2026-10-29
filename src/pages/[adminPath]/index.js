@@ -13,6 +13,7 @@ import { Separator } from '../../components/ui/separator'
 import { Skeleton } from '../../components/ui/skeleton'
 import { AddressesCard } from '../../components/admin/addresses-card'
 import { TwoFactorCard } from '../../components/admin/two-factor-card'
+import { BackupCard } from '../../components/admin/backup-card'
 import {
   Table,
   TableBody,
@@ -839,6 +840,7 @@ export default function AdminPage({ admin, adminPath, siteTitle: initialSiteTitl
           <section className="w-full">
             <div className={adminSectionGridClass}>
               <TwoFactorCard adminPath={adminPath} />
+              <BackupCard adminPath={adminPath} />
             </div>
           </section>
         </div>

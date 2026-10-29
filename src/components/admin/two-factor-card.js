@@ -6,6 +6,7 @@ import { Button } from '../ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
+import { QrCode } from './qr-code'
 
 async function copyText(text, message) {
   try {
@@ -139,7 +140,9 @@ export function TwoFactorCard({ adminPath }) {
         ) : stage === 'verify' && setup ? (
           <form onSubmit={enable} className="space-y-4">
             <div className="space-y-2">
-              <Label>1. Add this key to your authenticator app</Label>
+              <Label>1. Scan this with your authenticator app</Label>
+              <QrCode value={setup.otpauthUrl} label="QR code that adds this account to an authenticator app" />
+              <p className="text-xs text-muted-foreground">Or add the key by hand:</p>
               <p className="break-all rounded-md border bg-muted/30 p-3 font-mono text-sm" data-testid="totp-secret">{setup.secret}</p>
               <div className="flex flex-wrap gap-2">
                 <Button type="button" variant="outline" size="sm" onClick={() => copyText(setup.secret.replace(/\s/g, ''), 'Key copied.')}>
@@ -151,7 +154,7 @@ export function TwoFactorCard({ adminPath }) {
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Choose &quot;enter a setup key&quot; in the app. Time-based, 6 digits.
+                To type it in, choose &quot;enter a setup key&quot; in the app. Time-based, 6 digits.
               </p>
             </div>
             <div className="space-y-2">

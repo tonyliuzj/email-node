@@ -62,6 +62,29 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Start the image before publishing it. A build can succeed and still produce an image that crashes on
+      # boot (a file the bundler failed to copy), and nothing else would notice before people pulled it.
+      - name: Build image for a smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: email-node:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the image
+        run: |
+          docker run -d --name smoke -p 3000:3000 -e SESSION_PASSWORD=smoke-test-session-password-32-chars-min email-node:smoke
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:3000/api/domains > /dev/null && break; sleep 1; done
+          if ! curl -sf http://127.0.0.1:3000/api/domains > /dev/null; then
+            echo "The image did not start. Its log:" >&2
+            docker logs smoke >&2
+            exit 1
+          fi
+          curl -sL http://127.0.0.1:3000/setup | grep -q '/_next/static/' || { echo "The image served no page" >&2; docker logs smoke >&2; exit 1; }
+          docker rm -f smoke
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:

@@ -6,6 +6,9 @@ const nextConfig: NextConfig = {
   // The app has no images to optimise, so don't expose the optimiser endpoint (and its sharp/libvips
   // attack surface) at all.
   images: { unoptimized: true },
+  // The standalone build is what the Docker image runs, so it must hold only the code the server needs. The
+  // database lives in data/ and is chosen at run time, which the bundler can't see through, so it is kept out
+  // explicitly. Without this a build copies a local database (with its password hashes) into the output.
   async headers() {
     const isProduction = process.env.NODE_ENV === "production";
 

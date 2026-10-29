@@ -14,6 +14,9 @@ A modern, self-hosted IMAP webmail UI with an inbox address system. Email Node d
 
 - **IMAP Webmail Inbox**
   Polls IMAP on a configurable interval. View sender, subject, and message preview, then click to read full emails with sanitized HTML rendering. Images from the internet are blocked until the reader clicks **Load images**, so senders cannot track who opened a message.
+  - **Attachments** are listed on each message and download with their real name and exact contents. Pictures that are part of a message (logos, signatures) are shown in it.
+  - Messages can be marked **read or unread** and **deleted**. These are kept per address on this site, never on your mail server: one message can be addressed to several of your users, so deleting it there would delete it for all of them.
+  - **Load older messages** pages back through mail beyond the newest 50.
 
 - **Modern, Responsive UI**
   Clean interface with dark mode support, built with Tailwind CSS and Lucide icons. Mobile-friendly design with smooth animations.
@@ -33,6 +36,7 @@ A modern, self-hosted IMAP webmail UI with an inbox address system. Email Node d
   - Configure multiple domains with individual IMAP settings
   - Manage Turnstile CAPTCHA settings for address creation and login
   - Browse, search and delete the addresses visitors have created, and expire unused ones automatically
+  - Download a backup of the database, with a tested restore
   - Turn on two-factor authentication for the admin account
   - Change admin credentials and customize site title
   - Dynamic admin path configuration
@@ -169,6 +173,7 @@ Access the admin panel at `/admin` (or your custom admin path):
 | **Addresses**                    | Search, delete (one or many) any visitor address |
 | **Inactivity limit**             | Delete addresses unused for N days (0 = never)   |
 | **Two-factor authentication**    | Authenticator-app code required at admin login   |
+| **Backup**                       | Download a copy of the whole database            |
 
 **Deleting addresses.** The **Addresses** card lists every address with when it was created and last used. Deleting one removes its passkey and sign-in for good; the name can be registered again. Deleting a domain deletes the addresses on it too.
 
@@ -194,6 +199,27 @@ docker compose exec -u nextjs email-node node scripts/reset-admin.cjs --password
 ```
 
 Both actions sign every other admin session out. If the account was locked by failed logins, restart the app, because that lock is held in memory. Add `--username NAME` if there is more than one admin. The script uses `DATABASE_URL`, or `data/temp-mail.db` in the folder you run it from.
+
+### Backup and restore
+
+The **Backup** card downloads a consistent copy of the database (addresses, domains, settings and the admin account). It asks for your password again, because the file holds every password hash and the encrypted IMAP, Turnstile and two-factor secrets. Store it somewhere private, and keep your `DATA_ENCRYPTION_KEY` with it: those saved secrets can only be read with the key they were encrypted with.
+
+To restore, stop the app, put the backup in place, and start it again. The script checks the file first (it must be a healthy SQLite database with this app's tables) and keeps the database it replaces next to it as `temp-mail.db.before-restore-<time>`:
+
+```bash
+# direct install
+sudo systemctl stop email-node
+node scripts/restore-backup.cjs path/to/email-node-backup-2026-01-01-12-00-00.db
+sudo systemctl start email-node
+
+# Docker
+docker compose stop
+cp email-node-backup-2026-01-01-12-00-00.db data/restore.db
+docker compose run --rm --no-deps -u nextjs email-node node scripts/restore-backup.cjs /app/data/restore.db
+docker compose start
+```
+
+The script will not run without a terminal to confirm on unless you add `--yes`, and it refuses if the database is in use.
 
 ### Domain Configuration
 
@@ -261,6 +287,11 @@ src/
 │   ├── imap-limit.js               # Caps simultaneous connections to the mail server
 │   ├── message-limits.js           # Size caps for message bodies sent to the browser
 │   ├── schema-migrations.js        # Race-safe column migrations
+│   ├── attachments.js              # Lists a message's attachments and makes their names safe
+│   ├── part-stream.js              # Streams and decodes one attachment from the mail server
+│   ├── inline-images.js            # Pictures that are part of a message (Content-ID)
+│   ├── imap-session.js             # Mail server connection, timeouts, ownership check
+│   ├── message-parser.js           # Message parsing settings
 │   ├── validation.js               # Input normalisation
 │   ├── email-sanitizer.js          # HTML sanitising for message bodies
 │   ├── secret-store.js             # Encryption for stored secrets
@@ -278,7 +309,8 @@ Dockerfile                          # Production container image
 docker-compose.yml                  # Docker Compose deployment
 email-node.sh                       # Interactive direct/Docker installer
 scripts/
-└── reset-admin.cjs                 # Reset the admin password / turn off two-factor from the server
+├── reset-admin.cjs                 # Reset the admin password / turn off two-factor from the server
+└── restore-backup.cjs              # Validate a backup and put it in place of the database
 tests/                              # Automated tests (npm test)
 ```
 
@@ -379,6 +411,7 @@ Most configuration is done through the admin panel. Environment variables:
 - `SETUP_TOKEN` - Required on the first-run setup page when set. The installer generates one. It has no effect once an admin exists.
 - `SESSION_COOKIE_SECURE` - Session cookies are `Secure` in production, so browsers only keep them over HTTPS (or on `localhost`). Set this to `false` only if you open the app over plain `http://` with a server address; HTTPS is strongly preferred.
 - `TRUST_PROXY_HEADERS` - Client IPs (used for rate limiting) are read from `CF-Connecting-IP`, `X-Real-IP` or the last `X-Forwarded-For` entry. Set this to `false` if the app is reachable directly, without a proxy that sets one of them, so a client cannot forge its address.
+- `MAX_ATTACHMENT_MB` - Largest attachment that can be downloaded. Default `15`. Bigger files are refused rather than streamed.
 - `MAIL_CLOCK_SKEW_SECONDS` - How far before an address was registered a message may be stamped and still be shown to it. Default `120`. See [Who can read which mail](#who-can-read-which-mail).
 - `IMAP_MAX_CONNECTIONS` - Most inbox refreshes allowed to talk to the mail server at once. Default `8`. Extra refreshes wait a few seconds, then are told the mailbox is busy.
 - `HOST_PORT` - Host port used by Docker Compose.
@@ -408,6 +441,8 @@ Messages stay in your mailbox after an address is deleted or expires. Clean them
 - **Same-origin checks and rate limits** on mutating API routes. Limits are keyed on a client IP that a visitor cannot forge through `X-Forwarded-For`, and IPv6 clients share a limit per /64.
 - **Exact inbox isolation**: IMAP header search matches substrings, so every message is checked against its real recipients before it is shown. `a@example.com` never sees mail for `ba@example.com`.
 - **Sessions are checked against the database** on every request. Regenerating a passkey, changing the admin password or username, or deleting an address signs out all other sessions.
+- **Hardened service**: the systemd unit the installer writes runs the app as an ordinary user with a read-only file system except its database and build cache, no new privileges, a private `/tmp`, no device access and no extra capabilities (just `NET_BIND_SERVICE` if you choose a port below 1024). `systemd-analyze security` rates it 3.6 "OK"; an unhardened service scores about 9.6.
+- **Safe attachments**: every download is checked again for ownership (exact recipient, arrived while the address was registered) before a byte is sent. Everything downloads as a file, never rendered in the browser, with a sanitised name; only a few image types are ever shown inline, and never SVG.
 - **Private by default**: the installer creates the env files (which hold the session secret, encryption key and setup token) readable only by their owner, tightens existing ones on update, and keeps the data folder private to the app user.
 - **Bounded mailbox load**: each refresh only fetches mail newer than what the page already has, message bodies are size-capped, messages are parsed one at a time, and the number of simultaneous connections to your mail server is limited.
 - **No cached API responses**: every `/api` response is sent with `Cache-Control: no-store`.
@@ -444,6 +479,10 @@ npx tsc --noEmit
 ```
 
 GitHub Actions runs lint, type checking and the tests before every Docker image publish, and on pull requests. Tests need Node.js 22.7 or newer.
+
+`npm run build` uses webpack (`next build --webpack`) on purpose. Next 16's default bundler, Turbopack, puts one inline `<script>` in every page, and the script policy (no `unsafe-inline`) blocks it, which leaves a page that loads but does nothing. CI starts the standalone server and fails if any page contains an inline script, and checks that the standalone build holds only what the server needs. The Docker workflow starts the built image and checks that it serves pages before it is published.
+
+Dependabot proposes dependency updates weekly, and a separate weekly workflow runs `npm audit` on the production dependencies, so a newly published advisory shows up there instead of blocking a deploy.
 
 ---
 

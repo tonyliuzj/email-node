@@ -1,0 +1,31 @@
+name: Security audit
+
+# Checks the dependencies that ship to production for known vulnerabilities. It runs on a schedule and when
+# dependencies change, but not on every push, so a new advisory can never block a deploy by surprise: it
+# shows up here instead.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+
+jobs:
+  audit:
+    name: npm audit (production dependencies)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Reads the lockfile only, so nothing needs installing.
+      - name: Audit
+        run: npm audit --omit=dev --audit-level=high

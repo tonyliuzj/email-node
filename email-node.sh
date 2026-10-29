@@ -217,12 +217,15 @@ upgrade_system_packages() {
     return 0
   fi
 
+  # Installing anything needs a current package list, and a new server has none, so this always happens.
+  # SYSTEM_UPGRADE only decides whether packages that are already installed get upgraded.
+  apt_update
+
   if [ "$SYSTEM_UPGRADE" != "1" ]; then
     echo "Skipping system package upgrade because SYSTEM_UPGRADE=$SYSTEM_UPGRADE."
+    SYSTEM_UPGRADE_DONE=1
     return 0
   fi
-
-  apt_update
 
   step "Upgrading installed system packages..."
   as_root env DEBIAN_FRONTEND=noninteractive apt upgrade -y
@@ -937,17 +940,26 @@ ensure_app_env_defaults() {
 # The systemd service runs as RUN_USER, and the build step may have created the database as root when
 # the installer was started with sudo, so give data/ back to RUN_USER before the service starts.
 restore_data_dir_owner() {
-  if [ -d "${INSTALL_DIR}/data" ]; then
-    as_root chown -R "${RUN_USER}:${RUN_GROUP}" "${INSTALL_DIR}/data"
-    as_root chmod 700 "${INSTALL_DIR}/data"
-  fi
+  # The service is only allowed to write here and in .next (see write_service_file), and systemd refuses to
+  # start a service whose writable folders don't exist, so make sure the data folder is there.
+  as_root mkdir -p "${INSTALL_DIR}/data"
+  as_root chown -R "${RUN_USER}:${RUN_GROUP}" "${INSTALL_DIR}/data"
+  as_root chmod 700 "${INSTALL_DIR}/data"
 }
 
 write_service_file() {
   local app_port="$1"
   local node_bin
 
+  local capabilities="CapabilityBoundingSet="
+
   node_bin="$(command -v node)"
+
+  # Ports below 1024 need one specific permission that a non-root service doesn't have. Grant exactly that
+  # and nothing else; every other port needs no extra permissions at all.
+  if [ "$app_port" -lt 1024 ]; then
+    capabilities=$'CapabilityBoundingSet=CAP_NET_BIND_SERVICE\nAmbientCapabilities=CAP_NET_BIND_SERVICE'
+  fi
 
   step "Writing systemd service file..."
 
@@ -969,6 +981,27 @@ Restart=always
 RestartSec=5
 TimeoutStopSec=20
 SyslogIdentifier=${APP_NAME}
+
+# The app only needs to read its own files and write its database and build cache, so that is all it gets.
+# (MemoryDenyWriteExecute is deliberately not set: Node's JIT compiler needs memory it can write and run.)
+NoNewPrivileges=true
+${capabilities}
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=${INSTALL_DIR}/data ${INSTALL_DIR}/.next
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

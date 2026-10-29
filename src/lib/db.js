@@ -34,7 +34,9 @@ export const DEFAULT_BLOCKED_EMAIL_PREFIXES = [
   'webmaster',
 ]
 
-const dbPath = path.resolve(process.cwd(), process.env.DATABASE_URL || path.join('data', 'temp-mail.db'))
+// The database location is chosen at run time, which makes the bundler think any file might be needed and pull
+// the whole project (including a local data/ folder) into the standalone build. The comment tells it not to.
+const dbPath = path.resolve(/*turbopackIgnore: true*/ process.cwd(), process.env.DATABASE_URL || path.join('data', 'temp-mail.db'))
 fs.mkdirSync(path.dirname(dbPath), { recursive: true })
 const db = new Database(dbPath)
 
@@ -126,7 +128,32 @@ ensureColumn(db, 'admin', 'totp_enabled', 'INTEGER DEFAULT 0')
 ensureColumn(db, 'admin', 'totp_last_step', 'INTEGER DEFAULT 0')
 ensureColumn(db, 'admin', 'recovery_codes', 'TEXT')
 
+// Which messages an address has read, or removed from its own inbox. This lives here and not on the mail
+// server because one message in the shared mailbox can be addressed to several registered addresses:
+// deleting it there would delete it for all of them. Removing a message only hides it from this address.
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS message_states (
+    email_id INTEGER NOT NULL,
+    message_key TEXT NOT NULL,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    is_deleted INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (email_id, message_key)
+  )
+`).run()
+
+// SQLite reuses the id of a deleted address, so its message states must go with it or the next address to
+// get that id would inherit them.
+db.prepare(`
+  CREATE TRIGGER IF NOT EXISTS emails_remove_message_states
+  AFTER DELETE ON emails
+  BEGIN
+    DELETE FROM message_states WHERE email_id = OLD.id;
+  END
+`).run()
+
 const PURGE_INTERVAL_MS = 60 * 60 * 1000
+const MAX_STATES_PER_ADDRESS = 2000
 const MAX_BLOCKED_PREFIXES = 500
 const MAX_ADDRESS_PAGE = 1_000_000
 let lastPurgeAt = 0
@@ -576,6 +603,67 @@ export function consumeRecoveryCode(username, hash) {
   db.prepare('UPDATE admin SET recovery_codes = ? WHERE username = ?')
     .run(JSON.stringify(remaining.filter(existing => existing !== hash)), username)
   return true
+}
+
+function messageKey(uidValidity, uid) {
+  return `${uidValidity}:${uid}`
+}
+
+function validUids(uids, limit = 100) {
+  return [...new Set((Array.isArray(uids) ? uids : []).map(Number).filter(uid => Number.isInteger(uid) && uid > 0))].slice(0, limit)
+}
+
+// Map of uid -> { read, deleted } for the messages that have any state.
+export function getMessageStates(emailId, uidValidity, uids) {
+  const states = new Map()
+  const list = validUids(uids, 500)
+  if (list.length === 0) return states
+
+  const keys = list.map(uid => messageKey(uidValidity, uid))
+  const rows = db
+    .prepare(`SELECT message_key, is_read, is_deleted FROM message_states WHERE email_id = ? AND message_key IN (${keys.map(() => '?').join(',')})`)
+    .all(emailId, ...keys)
+
+  const uidByKey = new Map(list.map(uid => [messageKey(uidValidity, uid), uid]))
+  for (const row of rows) {
+    states.set(uidByKey.get(row.message_key), { read: row.is_read === 1, deleted: row.is_deleted === 1 })
+  }
+  return states
+}
+
+const STATE_STATEMENTS = {
+  read: { values: '1, 0', update: 'is_read = 1' },
+  unread: { values: '0, 0', update: 'is_read = 0' },
+  delete: { values: '1, 1', update: 'is_read = 1, is_deleted = 1' },
+}
+
+// action: 'read' | 'unread' | 'delete'. Returns how many messages were changed.
+export function setMessageStates(emailId, uidValidity, uids, action) {
+  const statement = STATE_STATEMENTS[action]
+  if (!statement) throw new Error(`Unknown message action: ${action}`)
+
+  const list = validUids(uids)
+  if (list.length === 0) return 0
+
+  const upsert = db.prepare(`
+    INSERT INTO message_states (email_id, message_key, is_read, is_deleted)
+    VALUES (?, ?, ${statement.values})
+    ON CONFLICT(email_id, message_key) DO UPDATE SET ${statement.update}, updated_at = datetime('now')
+  `)
+  const prune = db.prepare(`
+    DELETE FROM message_states
+    WHERE email_id = ?
+      AND rowid NOT IN (
+        SELECT rowid FROM message_states WHERE email_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT ?
+      )
+  `)
+
+  db.transaction(() => {
+    for (const uid of list) upsert.run(emailId, messageKey(uidValidity, uid))
+    prune.run(emailId, emailId, MAX_STATES_PER_ADDRESS)
+  })()
+
+  return list.length
 }
 
 export { db }

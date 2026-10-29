@@ -16,6 +16,13 @@ FROM deps AS builder
 COPY . .
 RUN npm run build
 
+# The standalone build is what ships, so it must hold only what the server needs. If a bundler change ever
+# pulls the whole project, or a database, into it, fail here instead of publishing an image that contains them.
+RUN for unwanted in src/lib src/components src/pages/api data tests scripts; do \
+      if [ -e ".next/standalone/$unwanted" ]; then echo "The standalone build contains $unwanted/, which must not ship." >&2; exit 1; fi; \
+    done; \
+    if find .next/standalone -name '*.db' -not -path '*/node_modules/*' | grep -q .; then echo "A database file ended up in the standalone build." >&2; exit 1; fi
+
 FROM node:22-bookworm-slim AS runner
 
 WORKDIR /app

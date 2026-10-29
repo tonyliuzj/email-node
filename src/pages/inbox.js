@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/router';
-import { RefreshCw, Inbox as InboxIcon, ArrowLeft, User, Calendar, Clock, MailOpen, Copy } from 'lucide-react';
+import { RefreshCw, Inbox as InboxIcon, ArrowLeft, User, Calendar, Clock, MailOpen, Copy, Download, Paperclip, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { AppShell } from '../components/app-shell';
 import { Badge } from '../components/ui/badge';
@@ -12,6 +12,13 @@ import { Separator } from '../components/ui/separator';
 import { Skeleton } from '../components/ui/skeleton';
 import { withUser } from '../lib/user-auth';
 import { restoreRemoteImages } from '../lib/remote-images';
+import {
+  INLINE_IMAGE_TYPES,
+  MAX_INLINE_IMAGE_BYTES,
+  applyInlineImages,
+  formatBytes,
+  inlineImagesToFetch,
+} from '../lib/inline-images';
 import { cn } from '../lib/utils';
 
 export const getServerSideProps = withUser(async ({ user }) => {
@@ -98,7 +105,15 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
   const router = useRouter();
   const refreshSeconds = Math.max(5, Number.parseInt(inboxRefreshSeconds, 10) || 10);
   const [inbox, setInbox] = useState([]);
-  const [selectedEmail, setSelectedEmail] = useState(null);
+  const [selectedUid, setSelectedUid] = useState(null);
+  const selectedEmail = inbox.find(message => message.uid === selectedUid) || null;
+  // Pictures that are part of a message (Content-ID), fetched when it is opened: uid -> { cid: data address }.
+  const [inlineImages, setInlineImages] = useState({});
+  const inlineRequested = useRef(new Set());
+  // Paging back through older mail.
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const lowestUidRef = useRef(0);
   // UIDs of the messages whose remote images the reader chose to load.
   const [imagesLoadedFor, setImagesLoadedFor] = useState(() => new Set());
   const [countdown, setCountdown] = useState(refreshSeconds);
@@ -173,10 +188,18 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
       if (data.reset) {
         seenUids.current.clear();
         highestUidRef.current = 0;
+        lowestUidRef.current = 0;
+        inlineRequested.current.clear();
+        setInlineImages({});
       }
       if (data.uidValidity) uidValidityRef.current = data.uidValidity;
       if (Number.isInteger(data.highestUid)) {
         highestUidRef.current = Math.max(highestUidRef.current, data.highestUid);
+      }
+      // Only a first load (or a reset) says where the page stopped; later refreshes leave it alone.
+      if (typeof data.hasMore === 'boolean' && Number.isInteger(data.lowestUid)) {
+        lowestUidRef.current = data.lowestUid;
+        setHasMore(data.hasMore);
       }
 
       const newOnes = (data.emails || []).filter(m => {
@@ -186,7 +209,7 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
       });
       if (data.reset) {
         setInbox(newOnes);
-        setSelectedEmail(null);
+        setSelectedUid(null);
       } else if (newOnes.length) {
         setInbox(prev => [...newOnes, ...prev]);
       }
@@ -225,6 +248,157 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [refreshSeconds, userEmails, fetchEmails]);
+
+  const loadOlder = async () => {
+    const primaryEmail = userEmails[0];
+    if (!primaryEmail || loadingOlder || !hasMore || !lowestUidRef.current) return;
+
+    setLoadingOlder(true);
+    try {
+      const res = await fetch('/api/emails', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: primaryEmail.email_address,
+          beforeUid: lowestUidRef.current,
+          uidValidity: uidValidityRef.current || undefined,
+        }),
+        credentials: 'include',
+      });
+      if (res.status === 401 || res.status === 403) {
+        router.push('/');
+        return;
+      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not load older messages.');
+
+      // The mailbox was rebuilt while this page was open: drop what it holds and let the next refresh reload.
+      if (data.reset) {
+        seenUids.current.clear();
+        highestUidRef.current = 0;
+        lowestUidRef.current = 0;
+        uidValidityRef.current = data.uidValidity || '';
+        inlineRequested.current.clear();
+        setInlineImages({});
+        setInbox([]);
+        setSelectedUid(null);
+        setHasMore(false);
+        return;
+      }
+
+      lowestUidRef.current = data.lowestUid > 0 ? data.lowestUid : lowestUidRef.current;
+      setHasMore(Boolean(data.hasMore));
+
+      const older = (data.emails || []).filter(m => {
+        if (seenUids.current.has(m.uid)) return false;
+        seenUids.current.add(m.uid);
+        return true;
+      });
+      if (older.length) setInbox(prev => [...prev, ...older]);
+    } catch (err) {
+      console.error(err);
+      toast.error(err.message || 'Could not load older messages.', { id: 'older-error' });
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
+  // Read, unread and removal are kept per address on this site, not on the mail server (see /api/emails/state).
+  const sendState = async (action, uids) => {
+    try {
+      const res = await fetch('/api/emails/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action, uids, uidValidity: uidValidityRef.current }),
+      });
+      if (res.status === 401 || res.status === 403) {
+        router.push('/');
+        return false;
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Could not save that change.');
+      }
+      return true;
+    } catch (err) {
+      toast.error(err.message || 'Could not save that change.', { id: 'message-state-error' });
+      return false;
+    }
+  };
+
+  const setReadState = (uids, read) => {
+    setInbox(prev => prev.map(m => (uids.includes(m.uid) ? { ...m, read } : m)));
+    sendState(read ? 'read' : 'unread', uids);
+  };
+
+  const selectEmail = email => {
+    setSelectedUid(email.uid);
+    if (!email.read) setReadState([email.uid], true);
+  };
+
+  const removeMessage = async email => {
+    if (!window.confirm('Delete this message? It disappears from your inbox here. It is not deleted from the mail server.')) return;
+    if (!(await sendState('delete', [email.uid]))) return;
+
+    setInbox(prev => prev.filter(m => m.uid !== email.uid));
+    setSelectedUid(null);
+    toast.success('Message deleted.');
+  };
+
+  const downloadAttachment = async (email, attachment) => {
+    try {
+      const params = new URLSearchParams({ uid: String(email.uid), part: attachment.part, v: uidValidityRef.current });
+      const res = await fetch(`/api/emails/attachment?${params}`, { credentials: 'include' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Could not download the attachment.');
+      }
+      const url = URL.createObjectURL(await res.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = attachment.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (err) {
+      toast.error(err.message || 'Could not download the attachment.', { id: 'attachment-error' });
+    }
+  };
+
+  // Pictures that belong to the message are fetched when it is opened, then placed into it by the page.
+  useEffect(() => {
+    if (!selectedEmail || inlineRequested.current.has(selectedEmail.uid)) return;
+    const wanted = inlineImagesToFetch(selectedEmail.html, selectedEmail.attachments);
+    if (wanted.length === 0) return;
+
+    const uid = selectedEmail.uid;
+    inlineRequested.current.add(uid);
+
+    (async () => {
+      const found = {};
+      for (const attachment of wanted) {
+        if (attachment.size > MAX_INLINE_IMAGE_BYTES) continue;
+        try {
+          const params = new URLSearchParams({ uid: String(uid), part: attachment.part, inline: '1', v: uidValidityRef.current });
+          const res = await fetch(`/api/emails/attachment?${params}`, { credentials: 'include' });
+          if (!res.ok) continue;
+          const blob = await res.blob();
+          if (!INLINE_IMAGE_TYPES.has(blob.type) || blob.size > MAX_INLINE_IMAGE_BYTES) continue;
+          found[attachment.cid] = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        } catch {
+          // A picture that can't be fetched just stays missing.
+        }
+      }
+      setInlineImages(prev => ({ ...prev, [uid]: found }));
+    })();
+  }, [selectedEmail]);
 
   const getSnippet = text => {
     const first = (text || '').split('\n')[0];
@@ -279,6 +453,18 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
     });
   };
 
+  const unreadCount = inbox.filter(message => !message.read).length;
+  // Pictures the message body shows itself are not listed again as files to download.
+  const listedAttachments = selectedEmail
+    ? (selectedEmail.attachments || []).filter(item => inlineImagesToFetch(selectedEmail.html, [item]).length === 0)
+    : [];
+  const messageHtml = selectedEmail?.html
+    ? applyInlineImages(
+        imagesLoadedFor.has(selectedEmail.uid) ? restoreRemoteImages(selectedEmail.html) : selectedEmail.html,
+        inlineImages[selectedEmail.uid]
+      )
+    : null;
+
   if (loading) {
     return <InboxSkeleton siteTitle={siteTitle} user={user} adminPath={adminPath} />;
   }
@@ -306,7 +492,7 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                       {userEmails[0]?.email_address || 'Live mailbox'}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {inbox.length} message{inbox.length !== 1 ? 's' : ''} - refresh in {countdown}s
+                      {inbox.length} message{inbox.length !== 1 ? 's' : ''}{inbox.length ? ` - ${unreadCount} unread` : ''} - refresh in {countdown}s
                     </p>
                   </div>
                   <Button variant="outline" size="sm" onClick={fetchEmails} disabled={isRefreshing}>
@@ -351,7 +537,7 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                       <button
                         key={email.uid}
                         type="button"
-                        onClick={() => setSelectedEmail(email)}
+                        onClick={() => selectEmail(email)}
                         className={cn(
                           'flex w-full gap-3 px-4 py-3 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
                           selectedEmail?.uid === email.uid && 'bg-accent'
@@ -362,10 +548,18 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="flex items-center justify-between gap-3">
-                            <span className="truncate text-sm font-medium">{formatSender(email.from)}</span>
-                            <span className="shrink-0 text-xs text-muted-foreground">{formatDate(email.date)}</span>
+                            <span className={cn('flex min-w-0 items-center gap-2 text-sm', email.read ? 'font-medium' : 'font-semibold')}>
+                              {email.read ? null : (
+                                <span className="h-2 w-2 shrink-0 rounded-full bg-primary" data-testid="unread-dot" aria-label="Unread" />
+                              )}
+                              <span className="truncate">{formatSender(email.from)}</span>
+                            </span>
+                            <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                              {email.attachments?.length ? <Paperclip className="h-3.5 w-3.5" aria-label="Has attachments" /> : null}
+                              {formatDate(email.date)}
+                            </span>
                           </span>
-                          <span className="mt-1 block truncate text-sm font-medium text-foreground/85">
+                          <span className={cn('mt-1 block truncate text-sm text-foreground/85', email.read ? 'font-medium' : 'font-semibold')}>
                             {email.subject || '(No Subject)'}
                           </span>
                           <span className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
@@ -376,6 +570,13 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                     ))}
                   </div>
                 )}
+                {hasMore ? (
+                  <div className="p-3">
+                    <Button type="button" variant="outline" className="w-full" onClick={loadOlder} disabled={loadingOlder}>
+                      {loadingOlder ? 'Loading...' : 'Load older messages'}
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -390,15 +591,22 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setSelectedEmail(null)}
+                      onClick={() => setSelectedUid(null)}
                       className="lg:hidden"
                     >
                       <ArrowLeft className="h-4 w-4" />
                       Messages
                     </Button>
-                      <Badge variant="secondary" className="ml-auto">
-                        Received
-                      </Badge>
+                      <div className="ml-auto flex items-center gap-2">
+                        <Button type="button" variant="outline" size="sm" onClick={() => setReadState([selectedEmail.uid], false)}>
+                          <MailOpen className="h-4 w-4" />
+                          Mark unread
+                        </Button>
+                        <Button type="button" variant="outline" size="sm" onClick={() => removeMessage(selectedEmail)}>
+                          <Trash2 className="h-4 w-4" />
+                          Delete
+                        </Button>
+                      </div>
                   </div>
                     <h2 className="break-words text-xl font-semibold tracking-tight sm:text-2xl">
                     {selectedEmail.subject || '(No Subject)'}
@@ -418,6 +626,30 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                     </div>
                   </div>
                 </div>
+                {listedAttachments.length > 0 ? (
+                  <div className="border-b px-4 py-3 sm:px-6" data-testid="attachments">
+                    <p className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                      <Paperclip className="h-3.5 w-3.5" />
+                      {listedAttachments.length} attachment{listedAttachments.length !== 1 ? 's' : ''}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {listedAttachments.map(attachment => (
+                        <Button
+                          key={attachment.part}
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          title={`${attachment.filename} (${attachment.type})`}
+                          onClick={() => downloadAttachment(selectedEmail, attachment)}
+                        >
+                          <Download className="h-4 w-4" />
+                          <span className="max-w-[16rem] truncate">{attachment.filename}</span>
+                          <span className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</span>
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                   <div className="min-h-0 flex-1 overflow-y-auto bg-background px-4 py-6 sm:px-8">
                     <div className="mx-auto max-w-4xl">
                     {selectedEmail.html ? (
@@ -448,7 +680,7 @@ export default function Inbox({ siteTitle, adminPath, user, inboxRefreshSeconds 
                         <iframe
                           title={selectedEmail.subject || 'Email message'}
                           sandbox="allow-popups allow-popups-to-escape-sandbox"
-                          srcDoc={imagesLoadedFor.has(selectedEmail.uid) ? restoreRemoteImages(selectedEmail.html) : selectedEmail.html}
+                          srcDoc={messageHtml}
                           className="h-[70vh] min-h-[420px] w-full border-0 bg-background"
                         />
                       </>
