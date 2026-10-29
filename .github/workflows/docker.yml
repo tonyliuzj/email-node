@@ -65,7 +65,7 @@ jobs:
       # Start the image before publishing it. A build can succeed and still produce an image that crashes on
       # boot (a file the bundler failed to copy), and nothing else would notice before people pulled it.
       - name: Build image for a smoke test
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
@@ -86,7 +86,7 @@ jobs:
           docker rm -f smoke
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
