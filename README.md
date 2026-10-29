@@ -51,10 +51,30 @@ A modern, self-hosted IMAP webmail UI with an inbox address system. Email Node d
 #### Quick Install (One-Click Script)
 
 ```bash
-curl -sSL https://github.com/tonyliuzj/email-node/releases/latest/download/email-node.sh -o email-node.sh && chmod +x email-node.sh && bash email-node.sh
+curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors https://github.com/tonyliuzj/email-node/releases/latest/download/email-node.sh -o email-node.sh && chmod +x email-node.sh && bash email-node.sh
 ```
 
+The download is retried automatically because the file is briefly unavailable while a new version is being published.
+
 Choose **Docker install (Compose)** in the installer to run the published Docker image with a persistent `data/` directory. On Ubuntu/Debian hosts, the installer configures Docker's official apt repository, removes conflicting distro Docker packages such as `docker.io`, and installs Docker Engine with the Compose v2 plugin.
+
+The installer shows a menu: **Install**, **Update**, **Start**, **Stop**, **Restart**, **Status**, **Logs** and **Uninstall**.
+
+##### Updating
+
+Run the installer again and choose **Update**. It pulls the latest code, then:
+
+- **Docker installs** stop a leftover direct (systemd) service if there is one, pull the newest image and restart the containers. If the host port is still being released by the old container, starting is retried automatically.
+- **Direct installs** reinstall dependencies, rebuild the app and restart the systemd service.
+
+Local edits to `package-lock.json` are discarded during an update. Any other locally modified file is stashed (not lost); restore it afterwards with `git stash pop`.
+
+Always download a fresh `email-node.sh` with the command above before updating, so you run the newest installer.
+
+##### Troubleshooting
+
+- **`address already in use` when starting Docker**: if the app was previously installed directly, the installer stops and disables its systemd service first (both modes use the same `data/` folder, so nothing is lost) and retries if the old container is still releasing the port. If something else is using the port, the installer prints the process and its PID. Stop it or change `HOST_PORT` in `.env`.
+- **Installer download returns an XML error**: the file is briefly missing while a release is published. Use the download command above, which retries.
 
 #### Docker Compose Installation
 

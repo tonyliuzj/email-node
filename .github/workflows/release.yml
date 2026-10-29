@@ -5,6 +5,11 @@ on:
     branches:
       - main
 
+# Runs replace the same release asset, so never let two overlap.
+concurrency:
+  group: release-asset
+  cancel-in-progress: false
+
 jobs:
   upload-release-asset:
     name: Upload email-node.sh to Release

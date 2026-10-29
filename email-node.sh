@@ -275,13 +275,36 @@ check_required_commands() {
 # Repository functions
 # ============================================================
 
+# Fast-forward to the latest code without ever failing on local changes. package-lock.json is
+# regenerated on the server (npm rewrites it, and this script may refresh it), so local edits to it
+# are discarded. Any other locally modified tracked file is stashed, not lost: restore it afterwards
+# with `git stash pop`.
+pull_latest_code() {
+  local dirty
+
+  if ! git diff --quiet -- package-lock.json; then
+    echo "Discarding local changes to package-lock.json (it is regenerated from package.json)."
+    git checkout -- package-lock.json
+  fi
+
+  dirty="$(git status --porcelain --untracked-files=no)"
+  if [ -n "$dirty" ]; then
+    echo "Stashing other local changes so the update can proceed:"
+    echo "$dirty"
+    git -c user.name="$APP_NAME" -c user.email="${APP_NAME}@localhost" stash push --message "${APP_NAME} update $(date +%Y-%m-%dT%H:%M:%S)" >/dev/null
+    echo "Your changes are saved. Restore them later with: git -C ${INSTALL_DIR} stash pop"
+  fi
+
+  git pull --ff-only
+}
+
 ensure_repo_present() {
   validate_template_config
 
   if [ -d "$INSTALL_DIR/.git" ]; then
     step "Repository already exists. Pulling latest changes..."
     cd "$INSTALL_DIR"
-    git pull --ff-only
+    pull_latest_code
   elif [ -d "$INSTALL_DIR" ]; then
     step "Directory exists but is not a git repository. Removing and cloning fresh..."
     rm -rf "$INSTALL_DIR"
@@ -620,6 +643,68 @@ compose() {
   )
 }
 
+# A direct (systemd) deployment of this app listens on the same port, so it has to be stopped before
+# the containers can bind it. It is also disabled so it does not come back on a reboot and fight
+# Docker for the port. Both modes share the same data directory, so no data is lost.
+stop_direct_service() {
+  command_exists systemctl || return 0
+
+  if ! as_root systemctl cat "$SERVICE_NAME" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if as_root systemctl is-active --quiet "$SERVICE_NAME" || as_root systemctl is-enabled --quiet "$SERVICE_NAME"; then
+    step "Stopping the direct deployment (${SERVICE_NAME}) so Docker can use the port..."
+    as_root systemctl disable --now "$SERVICE_NAME" || true
+    sleep 2
+  fi
+}
+
+# Starts the services, retrying when the host port is still being released by the container that is
+# being replaced (Docker reports "address already in use" for a moment after a recreate).
+compose_up() {
+  local attempt
+  local max_attempts=4
+
+  stop_direct_service
+
+  for attempt in $(seq 1 "$max_attempts"); do
+    if compose up -d "$@"; then
+      return 0
+    fi
+
+    if [ "$attempt" -lt "$max_attempts" ]; then
+      echo "Start failed (attempt ${attempt}/${max_attempts}). Stopping the old container and retrying in 5 seconds..."
+      compose down --remove-orphans >/dev/null 2>&1 || true
+      sleep 5
+    fi
+  done
+
+  report_port_owner
+  return 1
+}
+
+# Tells the user what is holding the app's host port when the services still cannot start.
+report_port_owner() {
+  local port
+  local listeners
+  local pid
+
+  port="$(read_env_value "HOST_PORT" "${INSTALL_DIR}/${COMPOSE_ENV_FILE}")"
+  port="${port:-3000}"
+
+  echo "Could not start the services. If the error was 'address already in use', something else is listening on port ${port}:"
+  if command_exists ss; then
+    listeners="$(as_root ss -ltnp "sport = :${port}" || true)"
+    echo "$listeners"
+    pid="$(echo "$listeners" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+    if [ -n "$pid" ]; then
+      echo "Process ${pid} is holding the port. If it is a leftover copy of this app, stop it with: sudo kill ${pid}"
+    fi
+  fi
+  echo "Or change HOST_PORT in ${INSTALL_DIR}/${COMPOSE_ENV_FILE}. Then run the update again."
+}
+
 require_compose_file() {
   if [ ! -f "${INSTALL_DIR}/${COMPOSE_FILE}" ]; then
     echo "Docker Compose file not found: ${INSTALL_DIR}/${COMPOSE_FILE}"
@@ -885,7 +970,7 @@ update_direct() {
   cd "$INSTALL_DIR"
 
   step "Pulling latest code..."
-  git pull --ff-only
+  pull_latest_code
 
   ensure_app_env_defaults
 
@@ -986,7 +1071,7 @@ install_docker_mode() {
   pull_or_build_docker_image
 
   step "Starting Docker services..."
-  compose up -d --no-build
+  compose_up --no-build
 
   echo
   echo "Installation complete!"
@@ -1004,14 +1089,14 @@ update_docker_mode() {
   cd "$INSTALL_DIR"
 
   step "Pulling latest code..."
-  git pull --ff-only
+  pull_latest_code
 
   ensure_app_env_defaults
 
   pull_or_build_docker_image
 
   step "Restarting Docker services..."
-  compose up -d --no-build
+  compose_up --no-build
 
   HOST_PORT_VALUE="$(read_env_value "HOST_PORT" "${INSTALL_DIR}/${COMPOSE_ENV_FILE}")"
   HOST_PORT_VALUE="${HOST_PORT_VALUE:-3000}"
@@ -1026,7 +1111,7 @@ start_docker_mode() {
   ensure_docker_available
 
   step "Starting Docker containers..."
-  compose up -d
+  compose_up
   compose ps
 }
 
